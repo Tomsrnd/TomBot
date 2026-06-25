@@ -1,71 +1,87 @@
 // ════════════════════════════════════════════════
-//  CHARGEMENT DU FICHIER .env
+//  TOMBOT v3.0 — Toutes fonctionnalités
+//  Optimisé Raspberry Pi 2
 // ════════════════════════════════════════════════
 const fs   = require("fs");
 const path = require("path");
 
 function loadEnv() {
-  const envPath = path.join(__dirname, ".env");
-  if (!fs.existsSync(envPath)) return;
-  const lines = fs.readFileSync(envPath, "utf8").split("\n");
-  for (const line of lines) {
-    const [key, ...val] = line.split("=");
-    if (key && val.length) process.env[key.trim()] = val.join("=").trim();
-  }
+  const p = path.join(__dirname, ".env");
+  if (!fs.existsSync(p)) return;
+  fs.readFileSync(p, "utf8").split("\n").forEach(line => {
+    const [k, ...v] = line.split("=");
+    if (k && v.length) process.env[k.trim()] = v.join("=").trim();
+  });
 }
 loadEnv();
 
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ChannelType,
-  PermissionsBitField,
-} = require("discord.js");
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
+        ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField } = require("discord.js");
 const https = require("https");
 const http  = require("http");
+const net   = require("net");
 
 // ════════════════════════════════════════════════
 //  CONFIG
 // ════════════════════════════════════════════════
-let TOKEN          = process.env.DISCORD_TOKEN   || "";
-const GUILD_ID     = process.env.GUILD_ID        || "";
-const OWNER_ID     = process.env.OWNER_ID        || "";
-const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || "3000");
+let TOKEN      = process.env.DISCORD_TOKEN || "";
+const GUILD_ID = process.env.GUILD_ID      || "";
+const OWNER_ID = process.env.OWNER_ID      || "";
+const PORT     = parseInt(process.env.DASHBOARD_PORT || "3000");
+const DASH_PWD = process.env.DASHBOARD_PASSWORD || "tombot2024";
 
-const WELCOME_CHANNEL  = "👋│présentations";
-const RULES_CHANNEL    = "📜│règles";
-const LOGS_CHANNEL     = "📋│logs";
-const LIVE_CHANNEL     = "📡│live-maintenant";
-const PRISON_TEXT      = "🔒│prison";
-const PRISON_VOCAL     = "🔒│vocal-prison";
-const TRIBUNAL_CHANNEL = "⚖️│tribunal";
-const ROLE_AFTER_QCM   = "🌱 Nouveau";
-const ROLE_PRISON      = "🔒 Prisonnier";
-const ROLE_MODO        = "🛡️ Modérateur";
-const MAX_WARNS        = 3;
+const CH = {
+  welcome:"👋│présentations", rules:"📜│règles", logs:"📋│logs",
+  live:"📡│live-maintenant", prison:"🔒│prison", prisonVoc:"🔒│vocal-prison",
+  tribunal:"⚖️│tribunal", planning:"📅│planning-stream",
+};
+const ROLES = { member:"🌱 Nouveau", prison:"🔒 Prisonnier", modo:"🛡️ Modérateur" };
+const MAX_WARNS = 3;
+const DATA_FILE = path.join(__dirname, "data.json");
 
-// ════════════════════════════════════════════════
-//  DONNÉES
-// ════════════════════════════════════════════════
-const config = {
-  twitchClientId:       process.env.TWITCH_CLIENT_ID     || "",
-  twitchClientSecret:   process.env.TWITCH_CLIENT_SECRET || "",
-  twitchUsername:       process.env.TWITCH_USERNAME      || "",
-  announceEnabled:      true,
-  mentionEveryone:      true,
-  showThumbnail:        true,
-  twitchChatModEnabled: false,
+// ── XP Config ──
+const XP_PER_MSG    = 10;
+const XP_COOLDOWN   = 60000; // 1 min entre chaque gain XP
+const XP_LEVELS = [
+  { level:1,  xp:0,    role:"🌱 Nouveau" },
+  { level:2,  xp:100,  role:"🎮 Gamer" },
+  { level:3,  xp:300,  role:"⭐ Régulier" },
+  { level:4,  xp:600,  role:"🏆 Vétéran" },
+  { level:5,  xp:1000, role:"👑 Élite" },
+];
+
+// ── Auto-réponses ──
+const AUTO_RESPONSES = {
+  "!discord": "🎮 Rejoins notre Discord : https://discord.gg/",
+  "!youtube": "📺 Chaîne YouTube : https://youtube.com/@Tom_O_Carre",
+  "!twitch":  "🟣 Twitch : https://twitch.tv/Tom_O_Carre",
+  "!social":  "📱 Tous les liens : https://linktr.ee/Tom_O_Carre",
+  "!rules":   "📜 Lis les règles dans le salon #règles !",
 };
 
-const dashData = {
-  members: 0, deleted: 0, qcmValidated: 0, streamsAnnounced: 0,
-  logs: [], qcmMembers: [], streams: [], twitchChatLogs: [],
-  prisonLogs: [],
-  warns: {},
+// ════════════════════════════════════════════════
+//  PERSISTANCE JSON (throttlée pour la carte SD)
+// ════════════════════════════════════════════════
+function loadData() {
+  if (!fs.existsSync(DATA_FILE)) return {};
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); }
+  catch(e) { return {}; }
+}
+
+let saveTimer = null;
+function saveData() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    try { fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); }
+    catch(e) { console.error("⚠️ Save:", e.message); }
+    saveTimer = null;
+  }, 5000);
+}
+
+const db = {
+  warns: {}, members: {}, prisonLogs: [], qcmMembers: [],
+  streams: [], logs: [], twitchChatLogs: [], giveaways: [],
+  polls: [], xp: {}, xpCooldowns: {}, streamStats: [],
   bannedWords: [
     "pute","pouffe","pouf","poufiase","pouffy","poufyase","pouffyase",
     "cul","encule","ntm","niquetamere","enfoire","pede","pd","salot","mbdtc","fdp",
@@ -74,782 +90,812 @@ const dashData = {
     "porn","porno","pr0n","p0rn","gangbang","handjob","blowjob","cilithang",
     "onlyfans","mym","fansly","hentai","xxx","nude","nudes",
   ],
+  ...loadData(),
+};
+["warns","members","prisonLogs","qcmMembers","streams","logs","twitchChatLogs",
+ "giveaways","polls","xp","xpCooldowns","streamStats","bannedWords"].forEach(k => {
+  if (!db[k]) db[k] = (k === "bannedWords") ? [] : (["xp","xpCooldowns","warns","members"].includes(k) ? {} : []);
+});
+
+// ════════════════════════════════════════════════
+//  CONFIG RUNTIME
+// ════════════════════════════════════════════════
+const cfg = {
+  twitch: {
+    clientId: process.env.TWITCH_CLIENT_ID||"", clientSecret: process.env.TWITCH_CLIENT_SECRET||"",
+    username: process.env.TWITCH_USERNAME||"", botUsername: process.env.TWITCH_BOT_USERNAME||"",
+    botToken: process.env.TWITCH_BOT_TOKEN||"",
+  },
+  announce:true, everyone:true, thumbnail:true, twitchMod:false,
+  twitchChatCommands: true,
+  twitchChatReminder: { enabled:false, interval:15, message:"🎮 Rejoins notre Discord !" },
 };
 
-let twitchAccessToken = null, isStreamLive = false, lastAnnouncedStreamId = null;
+let twitchToken=null, isLive=false, lastStreamId=null;
+let streamEndTimer=null, twitchIRCEnabled=false, streamEndTime=null;
+let streamStartTime=null, streamPeakViewers=0, streamCurrentViewers=0;
+const twitchBot = { socket:null, connected:false };
+let deleted=0, streamsCount=0;
+let reminderInterval=null;
 
-// ── Twitch Bot Chat ──
-const twitchBot = {
-  username: process.env.TWITCH_BOT_USERNAME || "",
-  token:    process.env.TWITCH_BOT_TOKEN    || "",
-  connected: false,
-  socket:   null,
-};
+// Sessions dashboard (auth)
+const dashSessions = new Set();
 
 // ════════════════════════════════════════════════
 //  HELPERS
 // ════════════════════════════════════════════════
-function saveEnv(updates) {
-  const envPath = path.join(__dirname, ".env");
-  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
-  for (const [key, val] of Object.entries(updates)) {
-    const regex = new RegExp(`^${key}=.*$`, "m");
-    content = regex.test(content) ? content.replace(regex, `${key}=${val}`) : content + `\n${key}=${val}`;
-    process.env[key] = val;
-  }
-  fs.writeFileSync(envPath, content.trim() + "\n");
+function saveEnv(u) {
+  const p=path.join(__dirname,".env");
+  let c=fs.existsSync(p)?fs.readFileSync(p,"utf8"):"";
+  for(const[k,v]of Object.entries(u)){const r=new RegExp(`^${k}=.*$`,"m");c=r.test(c)?c.replace(r,`${k}=${v}`):c+`\n${k}=${v}`;process.env[k]=v;}
+  fs.writeFileSync(p,c.trim()+"\n");
 }
+function normalize(s){return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");}
+function isBanned(t){const n=normalize(t);return db.bannedWords.find(w=>n.includes(normalize(w)))||null;}
+function rand(min,max){return Math.floor(Math.random()*(max-min+1))+min;}
 
-function normalize(str) {
-  return str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
-}
-
-function containsBannedWord(content) {
-  const norm = normalize(content);
-  for (const word of dashData.bannedWords) {
-    if (norm.includes(normalize(word))) return word;
-  }
-  return null;
-}
-
-// ════════════════════════════════════════════════
-//  CRÉATION SALONS PRISON
-// ════════════════════════════════════════════════
-async function setupPrisonChannels(guild) {
-  // Récupérer ou créer la catégorie MODÉRATION
-  let prisonCat = guild.channels.cache.find(c => c.name === "🔒 PRISON" && c.type === ChannelType.GuildCategory);
-
-  // Rôles
-  let prisonRole = guild.roles.cache.find(r => r.name === ROLE_PRISON);
-  if (!prisonRole) {
-    prisonRole = await guild.roles.create({
-      name: ROLE_PRISON,
-      color: "#4a4a4a",
-      reason: "Rôle prison automatique",
-    });
-    console.log("🔒 Rôle Prisonnier créé");
-  }
-
-  const modoRole = guild.roles.cache.find(r => r.name === ROLE_MODO);
-
-  // Créer catégorie PRISON si inexistante
-  if (!prisonCat) {
-    prisonCat = await guild.channels.create({
-      name: "🔒 PRISON",
-      type: ChannelType.GuildCategory,
-      permissionOverwrites: [
-        // Tout le monde ne peut pas voir
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-        // Prisonniers peuvent voir
-        { id: prisonRole.id, allow: [PermissionsBitField.Flags.ViewChannel] },
-        // Modérateurs peuvent voir
-        ...(modoRole ? [{ id: modoRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageMessages] }] : []),
-      ],
-    });
-    console.log("📁 Catégorie Prison créée");
-  }
-
-  // Salon texte prison
-  if (!guild.channels.cache.find(c => c.name === PRISON_TEXT)) {
-    await guild.channels.create({
-      name: PRISON_TEXT,
-      type: ChannelType.GuildText,
-      parent: prisonCat.id,
-      topic: "Salon réservé aux prisonniers et modérateurs",
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-        { id: prisonRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-        ...(modoRole ? [{ id: modoRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageMessages] }] : []),
-      ],
-    });
-    console.log("💬 Salon texte prison créé");
-  }
-
-  // Salon vocal prison
-  if (!guild.channels.cache.find(c => c.name === PRISON_VOCAL)) {
-    await guild.channels.create({
-      name: PRISON_VOCAL,
-      type: ChannelType.GuildVoice,
-      parent: prisonCat.id,
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect] },
-        { id: prisonRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
-        ...(modoRole ? [{ id: modoRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.MuteMembers] }] : []),
-      ],
-    });
-    console.log("🔊 Salon vocal prison créé");
-  }
-
-  // Salon tribunal
-  if (!guild.channels.cache.find(c => c.name === TRIBUNAL_CHANNEL)) {
-    const modoCat = guild.channels.cache.find(c => c.name === "🛡️ MODÉRATION" && c.type === ChannelType.GuildCategory);
-    await guild.channels.create({
-      name: TRIBUNAL_CHANNEL,
-      type: ChannelType.GuildText,
-      parent: modoCat?.id || prisonCat.id,
-      topic: "Tribunal — décisions pour les prisonniers",
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-        ...(modoRole ? [{ id: modoRole.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }] : []),
-      ],
-    });
-    console.log("⚖️ Salon tribunal créé");
-  }
-}
-
-// ════════════════════════════════════════════════
-//  SYSTÈME DE WARNS + PRISON
-// ════════════════════════════════════════════════
-async function warnUser(member, reason, guild) {
-  const uid = member.user.id;
-  if (!dashData.warns[uid]) dashData.warns[uid] = { count: 0, history: [] };
-  dashData.warns[uid].count++;
-  dashData.warns[uid].history.push({ reason, time: new Date().toLocaleString("fr-FR") });
-  const count = dashData.warns[uid].count;
-
-  await member.user.send(
-    `⚠️ **Avertissement ${count}/${MAX_WARNS} sur le serveur Tom_O_Carre**\n` +
-    `Raison : ${reason}\n` +
-    (count >= MAX_WARNS
-      ? "🔒 Tu as atteint le maximum — tu vas être envoyé en prison !"
-      : `Il te reste ${MAX_WARNS - count} avertissement(s) avant la prison.`)
-  ).catch(() => {});
-
-  const logsChannel = guild.channels.cache.find(c => c.name === LOGS_CHANNEL);
-  if (logsChannel) {
-    await logsChannel.send({ embeds: [
-      new EmbedBuilder().setColor("#faa81a")
-        .setTitle(`⚠️ Avertissement ${count}/${MAX_WARNS} — ${member.user.tag}`)
-        .addFields(
-          { name:"Membre", value:`<@${uid}>`, inline:true },
-          { name:"Raison", value:reason, inline:true },
-          { name:"Total warns", value:`${count}/${MAX_WARNS}`, inline:true }
-        ).setTimestamp()
-    ]});
-  }
-
-  if (count >= MAX_WARNS) {
-    await sendToPrison(member, `${count} avertissements accumulés`, guild);
-    dashData.warns[uid].count = 0;
-  }
-}
-
-async function sendToPrison(member, reason, guild) {
+// ── Notification DM au owner ──
+async function notifyOwner(message) {
   try {
-    const prisonRole = guild.roles.cache.find(r => r.name === ROLE_PRISON);
-    if (!prisonRole) { await setupPrisonChannels(guild); }
-
-    // Sauvegarder les rôles actuels
-    const rolesBackup = member.roles.cache
-      .filter(r => r.id !== guild.roles.everyone.id && r.name !== ROLE_PRISON)
-      .map(r => r.id);
-
-    // Donner uniquement le rôle prisonnier
-    await member.roles.set([guild.roles.cache.find(r => r.name === ROLE_PRISON)]).catch(() => {});
-
-    // Message dans le salon prison
-    const prisonChannel = guild.channels.cache.find(c => c.name === PRISON_TEXT);
-    if (prisonChannel) {
-      await prisonChannel.send({ embeds: [
-        new EmbedBuilder().setColor("#ed4245")
-          .setTitle("🔒 Nouveau prisonnier !")
-          .setDescription(
-            `<@${member.user.id}>, tu as été envoyé en prison.\n\n` +
-            `**Raison :** ${reason}\n\n` +
-            `Un modérateur va décider de ton sort dans le salon ⚖️ tribunal.\n` +
-            `Tu peux parler ici et dans le salon vocal 🔒 en attendant.`
-          ).setThumbnail(member.user.displayAvatarURL()).setTimestamp()
-      ]});
-    }
-
-    // Message dans le tribunal
-    const tribunalChannel = guild.channels.cache.find(c => c.name === TRIBUNAL_CHANNEL);
-    if (tribunalChannel) {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`verdict_free_${member.user.id}`).setLabel("🔓 Liberté").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`verdict_mute_${member.user.id}`).setLabel("🔇 Mute 24h").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`verdict_ban_${member.user.id}`).setLabel("🔨 Ban").setStyle(ButtonStyle.Danger),
-      );
-      await tribunalChannel.send({
-        content: `@here ⚖️ **Nouveau prisonnier à juger !**`,
-        embeds: [new EmbedBuilder().setColor("#faa81a")
-          .setTitle(`⚖️ Tribunal — ${member.user.tag}`)
-          .setDescription(`**Membre :** <@${member.user.id}>\n**Raison :** ${reason}\n\nChoisissez le verdict :`)
-          .setThumbnail(member.user.displayAvatarURL()).setTimestamp()],
-        components: [row],
-      });
-    }
-
-    // MP au prisonnier
-    await member.user.send(
-      `🔒 **Tu as été envoyé en prison sur le serveur Tom_O_Carre !**\n` +
-      `Raison : ${reason}\n` +
-      `Un modérateur va décider de ton sort. Tu peux parler dans le salon prison en attendant.`
-    ).catch(() => {});
-
-    dashData.prisonLogs.push({
-      user: member.user.tag,
-      userId: member.user.id,
-      reason,
-      time: new Date().toLocaleString("fr-FR"),
-      verdict: "En attente",
-      rolesBackup,
-    });
-
-    console.log(`🔒 ${member.user.tag} envoyé en prison`);
-  } catch(e) { console.error("⚠️ Erreur prison :", e.message); }
+    const owner = await client.users.fetch(OWNER_ID);
+    await owner.send(message);
+  } catch(e) {}
 }
 
+// ════════════════════════════════════════════════
+//  SYSTÈME XP
+// ════════════════════════════════════════════════
+function getLevel(xp) {
+  let current = XP_LEVELS[0];
+  for(const l of XP_LEVELS) { if(xp >= l.xp) current = l; }
+  return current;
+}
+function getNextLevel(xp) {
+  return XP_LEVELS.find(l => l.xp > xp) || null;
+}
+
+async function addXP(member, guild) {
+  const uid = member.user.id;
+  const now = Date.now();
+  if(db.xpCooldowns[uid] && now - db.xpCooldowns[uid] < XP_COOLDOWN) return;
+  db.xpCooldowns[uid] = now;
+  if(!db.xp[uid]) db.xp[uid] = 0;
+  const oldLevel = getLevel(db.xp[uid]);
+  db.xp[uid] += XP_PER_MSG;
+  const newLevel = getLevel(db.xp[uid]);
+  saveData();
+
+  // Level up !
+  if(newLevel.level > oldLevel.level) {
+    const role = guild.roles.cache.find(r => r.name === newLevel.role);
+    if(role) {
+      // Retirer ancien rôle de niveau
+      const oldRole = guild.roles.cache.find(r => r.name === oldLevel.role);
+      if(oldRole) await member.roles.remove(oldRole).catch(()=>{});
+      await member.roles.add(role).catch(()=>{});
+    }
+    const logCh = guild.channels.cache.find(c=>c.name===CH.logs);
+    if(logCh) logCh.send({ embeds:[new EmbedBuilder().setColor("#faa81a")
+      .setTitle(`⭐ Level Up ! — ${member.user.tag}`)
+      .setDescription(`<@${uid}> est passé niveau **${newLevel.level}** ! Rôle : **${newLevel.role}**`)
+      .setTimestamp()] });
+    member.user.send(`🎉 **Level Up !** Tu es maintenant niveau **${newLevel.level}** sur le serveur Tom_O_Carre !\nRôle obtenu : **${newLevel.role}** 🏆`).catch(()=>{});
+  }
+}
 
 // ════════════════════════════════════════════════
-//  TWITCH CHAT BOT (IRC)
+//  GIVEAWAYS
 // ════════════════════════════════════════════════
-const net = require("net");
+async function startGiveaway(guild, channelName, prize, durationMs, conditions="") {
+  const ch = guild.channels.cache.find(c=>c.name===channelName) || guild.channels.cache.find(c=>c.name===CH.welcome);
+  if(!ch) return null;
+  const endTime = Date.now() + durationMs;
+  const embed = new EmbedBuilder().setColor("#faa81a")
+    .setTitle("🎁 GIVEAWAY !")
+    .setDescription(`**Prix :** ${prize}\n\n${conditions ? `**Conditions :** ${conditions}\n\n`:""}`+
+      `Clique sur 🎁 pour participer !\n\n**Fin :** <t:${Math.floor(endTime/1000)}:R>`)
+    .setFooter({ text:"Clique sur le bouton pour participer" }).setTimestamp();
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`giveaway_join`).setLabel("🎁 Participer").setStyle(ButtonStyle.Success)
+  );
+  const msg = await ch.send({ content:"🎉 **GIVEAWAY** 🎉", embeds:[embed], components:[row] });
 
-function connectTwitchChat() {
-  if (!twitchBot.username || !twitchBot.token) {
-    console.log("⚠️ Twitch bot non configuré (username/token manquant)");
+  const gw = { id:msg.id, channelId:ch.id, prize, endTime, conditions, participants:[], ended:false };
+  db.giveaways.push(gw);
+  saveData();
+
+  // Timer de fin
+  setTimeout(() => endGiveaway(guild, gw.id), durationMs);
+  return gw;
+}
+
+async function endGiveaway(guild, gwId) {
+  const gw = db.giveaways.find(g=>g.id===gwId);
+  if(!gw || gw.ended) return;
+  gw.ended = true;
+  saveData();
+
+  const ch = guild.channels.cache.get(gw.channelId);
+  if(!ch) return;
+
+  if(gw.participants.length === 0) {
+    ch.send({ embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("🎁 Giveaway terminé").setDescription(`Personne n'a participé au giveaway **${gw.prize}** 😢`)] });
     return;
   }
 
-  const socket = net.createConnection(6667, "irc.chat.twitch.tv");
-  twitchBot.socket = socket;
+  const winnerId = gw.participants[rand(0, gw.participants.length-1)];
+  const winner = await guild.members.fetch(winnerId).catch(()=>null);
+  ch.send({ embeds:[new EmbedBuilder().setColor("#57f287")
+    .setTitle("🎉 Giveaway terminé !")
+    .setDescription(`🏆 Félicitations à <@${winnerId}> !\n\n**Prix :** ${gw.prize}\n\n${winner?`Contacter <@${OWNER_ID}> pour récupérer ton lot !`:""}`)] });
 
-  socket.on("connect", () => {
-    socket.write(`PASS oauth:${twitchBot.token}\r\n`);
-    socket.write(`NICK ${twitchBot.username}\r\n`);
-    socket.write(`JOIN #${config.twitchUsername.toLowerCase()}\r\n`);
-    console.log(`💜 Twitch bot connecté : ${twitchBot.username} → #${config.twitchUsername}`);
-    twitchBot.connected = true;
-  });
-
-  socket.on("data", (data) => {
-    const msg = data.toString();
-
-    // Répondre au PING de Twitch
-    if (msg.includes("PING")) {
-      socket.write("PONG :tmi.twitch.tv\r\n");
-      return;
-    }
-
-    // Modération du chat si activée
-    if (config.twitchChatModEnabled && msg.includes("PRIVMSG")) {
-      const match = msg.match(/:(.+)!.+@.+\.tmi\.twitch\.tv PRIVMSG #\S+ :(.+)/);
-      if (match) {
-        const user = match[1];
-        const text = match[2].trim();
-        const banned = containsBannedWord(text);
-        if (banned && user.toLowerCase() !== config.twitchUsername.toLowerCase()) {
-          sendTwitchMessage(`/timeout ${user} 600 Mot interdit : ${banned}`);
-          sendTwitchMessage(`@${user} ⚠️ Ton message a été supprimé car il contient un mot interdit.`);
-          dashData.twitchChatLogs.push({
-            message: `🚫 [${user}] supprimé : "${banned}"`,
-            time: new Date().toLocaleString("fr-FR"),
-            status: "🚫"
-          });
-          console.log(`🚫 Twitch : ${user} timeout — mot : "${banned}"`);
-        }
-      }
-    }
-  });
-
-  socket.on("error", (e) => {
-    twitchBot.connected = false;
-    console.error("⚠️ Twitch chat error :", e.message);
-  });
-
-  socket.on("close", () => {
-    twitchBot.connected = false;
-    console.log("💔 Twitch chat déconnecté — reconnexion dans 30s...");
-    setTimeout(connectTwitchChat, 30000);
-  });
+  await notifyOwner(`🎁 Giveaway terminé !\nPrix : **${gw.prize}**\nGagnant : **${winner?.user.tag||winnerId}**`);
 }
 
-function sendTwitchMessage(message) {
-  if (!twitchBot.socket || !twitchBot.connected) return;
-  twitchBot.socket.write(`PRIVMSG #${config.twitchUsername.toLowerCase()} :${message}\r\n`);
-  dashData.twitchChatLogs.push({
-    message,
-    time: new Date().toLocaleString("fr-FR"),
-    status: "✅"
+// ════════════════════════════════════════════════
+//  SONDAGES
+// ════════════════════════════════════════════════
+async function createPoll(guild, question, options, durationMs) {
+  const ch = guild.channels.cache.find(c=>c.name==="💬│général") || guild.channels.cache.find(c=>c.name===CH.welcome);
+  if(!ch || options.length < 2 || options.length > 4) return null;
+
+  const endTime = Date.now() + durationMs;
+  const embed = new EmbedBuilder().setColor("#5865f2")
+    .setTitle(`🗳️ Sondage`)
+    .setDescription(`**${question}**\n\nFin : <t:${Math.floor(endTime/1000)}:R>`)
+    .setTimestamp();
+
+  options.forEach((o,i) => embed.addFields({ name:`Option ${i+1}`, value:`${["🇦","🇧","🇨","🇩"][i]} ${o} — 0 vote`, inline:true }));
+
+  const row = new ActionRowBuilder().addComponents(
+    options.map((o,i) => new ButtonBuilder()
+      .setCustomId(`poll_vote_${i}`)
+      .setLabel(`${["🇦","🇧","🇨","🇩"][i]} ${o}`)
+      .setStyle(ButtonStyle.Primary))
+  );
+
+  const msg = await ch.send({ embeds:[embed], components:[row] });
+  const poll = { id:msg.id, channelId:ch.id, question, options, votes:options.map(()=>0), voters:{}, endTime, ended:false };
+  db.polls.push(poll);
+  saveData();
+
+  setTimeout(() => endPoll(guild, poll.id), durationMs);
+  return poll;
+}
+
+async function endPoll(guild, pollId) {
+  const poll = db.polls.find(p=>p.id===pollId);
+  if(!poll || poll.ended) return;
+  poll.ended = true;
+  saveData();
+
+  const ch = guild.channels.cache.get(poll.channelId);
+  if(!ch) return;
+
+  const total = poll.votes.reduce((a,b)=>a+b, 0);
+  const winnerIdx = poll.votes.indexOf(Math.max(...poll.votes));
+  const embed = new EmbedBuilder().setColor("#57f287").setTitle("🗳️ Sondage terminé !")
+    .setDescription(`**${poll.question}**\n\n**Gagnant : ${["🇦","🇧","🇨","🇩"][winnerIdx]} ${poll.options[winnerIdx]}** avec ${poll.votes[winnerIdx]} vote(s) !\n\nTotal : ${total} vote(s)`);
+  poll.options.forEach((o,i) => {
+    const pct = total ? Math.round(poll.votes[i]/total*100) : 0;
+    embed.addFields({ name:`${["🇦","🇧","🇨","🇩"][i]} ${o}`, value:`${"█".repeat(Math.round(pct/10))}${"░".repeat(10-Math.round(pct/10))} ${pct}% (${poll.votes[i]})`, inline:false });
   });
+  ch.send({ embeds:[embed], components:[] });
+}
+
+// ════════════════════════════════════════════════
+//  WARNS + PRISON
+// ════════════════════════════════════════════════
+async function warn(member, reason, guild) {
+  const uid=member.user.id;
+  if(!db.warns[uid]) db.warns[uid]={count:0,history:[]};
+  db.warns[uid].count++;
+  db.warns[uid].history.push({reason,time:new Date().toLocaleString("fr-FR")});
+  saveData();
+  const count=db.warns[uid].count;
+  member.user.send(`⚠️ **Avertissement ${count}/${MAX_WARNS}**\nRaison : ${reason}\n${count>=MAX_WARNS?"🔒 Direction la prison !":`${MAX_WARNS-count} warn(s) restant(s).`}`).catch(()=>{});
+  const log=guild.channels.cache.find(c=>c.name===CH.logs);
+  if(log) log.send({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle(`⚠️ Warn ${count}/${MAX_WARNS} — ${member.user.tag}`).addFields({name:"Raison",value:reason},{name:"Total",value:`${count}/${MAX_WARNS}`,inline:true}).setTimestamp()]});
+  await notifyOwner(`⚠️ **Warn** — ${member.user.tag}\nRaison : ${reason}\nTotal : ${count}/${MAX_WARNS}`);
+  if(count>=MAX_WARNS){db.warns[uid].count=0;saveData();await prison(member,`${MAX_WARNS} avertissements`,guild);}
+}
+
+async function prison(member, reason, guild) {
+  try {
+    const uid=member.user.id;
+    let role=guild.roles.cache.find(r=>r.name===ROLES.prison);
+    if(!role){
+      role=await guild.roles.create({name:ROLES.prison,color:0x4a4a4a});
+      for(const[,ch]of guild.channels.cache){
+        if(ch.type===ChannelType.GuildText||ch.type===ChannelType.GuildVoice)
+          await ch.permissionOverwrites.edit(role,{ViewChannel:false,Connect:false}).catch(()=>{});
+      }
+    }
+    const backup=member.roles.cache.filter(r=>r.id!==guild.roles.everyone.id&&r.name!==ROLES.prison).map(r=>r.id);
+    db.members[uid]={...db.members[uid],rolesBackup:backup};
+    saveData();
+    await member.roles.set([role]).catch(()=>{});
+    const prisonCh=guild.channels.cache.find(c=>c.name===CH.prison);
+    if(prisonCh){
+      await prisonCh.permissionOverwrites.edit(role,{ViewChannel:true,SendMessages:true}).catch(()=>{});
+      prisonCh.send({embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("🔒 Nouveau prisonnier !").setDescription(`<@${uid}> en prison.\n**Raison :** ${reason}`).setTimestamp()]});
+    }
+    const prisonVoc=guild.channels.cache.find(c=>c.name===CH.prisonVoc);
+    if(prisonVoc) await prisonVoc.permissionOverwrites.edit(role,{ViewChannel:true,Connect:true,Speak:true}).catch(()=>{});
+    const trib=guild.channels.cache.find(c=>c.name===CH.tribunal);
+    if(trib) trib.send({
+      content:"@here ⚖️ Nouveau prisonnier !",
+      embeds:[new EmbedBuilder().setColor("#faa81a").setTitle(`⚖️ Tribunal — ${member.user.tag}`).setDescription(`**Membre :** <@${uid}>\n**Raison :** ${reason}`).setThumbnail(member.user.displayAvatarURL()).setTimestamp()],
+      components:[new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`v_free_${uid}`).setLabel("🔓 Liberté").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`v_mute_${uid}`).setLabel("🔇 Mute 24h").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`v_ban_${uid}`).setLabel("🔨 Ban").setStyle(ButtonStyle.Danger),
+      )],
+    });
+    member.user.send(`🔒 Tu as été envoyé en prison.\nRaison : ${reason}`).catch(()=>{});
+    db.prisonLogs.push({user:member.user.tag,userId:uid,reason,time:new Date().toLocaleString("fr-FR"),verdict:"En attente"});
+    saveData();
+    await notifyOwner(`🔒 **Prison** — ${member.user.tag}\nRaison : ${reason}`);
+  } catch(e){console.error("⚠️ Prison:",e.message);}
 }
 
 // ════════════════════════════════════════════════
 //  TWITCH API
 // ════════════════════════════════════════════════
-function httpsPost(url) {
-  return new Promise((resolve,reject) => {
-    const req = https.request(url,{method:"POST"},(res)=>{let b="";res.on("data",d=>b+=d);res.on("end",()=>resolve(JSON.parse(b)));});
-    req.on("error",reject);req.end();
-  });
-}
-function httpsGet(url,headers) {
-  return new Promise((resolve,reject) => {
-    const req = https.get(url,{headers},(res)=>{let b="";res.on("data",d=>b+=d);res.on("end",()=>resolve(JSON.parse(b)));});
-    req.on("error",reject);
-  });
-}
-async function getTwitchToken() {
-  const data = await httpsPost(`https://id.twitch.tv/oauth2/token?client_id=${config.twitchClientId}&client_secret=${config.twitchClientSecret}&grant_type=client_credentials`);
-  twitchAccessToken = data.access_token;
-  console.log("🔑 Token Twitch obtenu");
-}
-async function checkTwitchStream() {
-  if (!config.twitchClientId || !config.twitchClientSecret || !config.twitchUsername) return;
+function tGet(url,headers){return new Promise((res,rej)=>{const r=https.get(url,{headers},re=>{let b="";re.on("data",d=>b+=d);re.on("end",()=>res(JSON.parse(b)));});r.on("error",rej);});}
+function tPost(url){return new Promise((res,rej)=>{const r=https.request(url,{method:"POST"},re=>{let b="";re.on("data",d=>b+=d);re.on("end",()=>res(JSON.parse(b)));});r.on("error",rej);r.end();});}
+
+async function getTwitchToken(){const d=await tPost(`https://id.twitch.tv/oauth2/token?client_id=${cfg.twitch.clientId}&client_secret=${cfg.twitch.clientSecret}&grant_type=client_credentials`);twitchToken=d.access_token;}
+
+async function checkStream() {
+  if(!cfg.twitch.clientId||!cfg.twitch.username) return;
   try {
-    if (!twitchAccessToken) await getTwitchToken();
-    const data = await httpsGet(`https://api.twitch.tv/helix/streams?user_login=${config.twitchUsername}`,{"Client-ID":config.twitchClientId,"Authorization":`Bearer ${twitchAccessToken}`});
-    if (data.data && data.data.length > 0) {
-      const stream = data.data[0];
-      if (!isStreamLive || lastAnnouncedStreamId !== stream.id) {
-        isStreamLive = true; lastAnnouncedStreamId = stream.id;
-        if (config.announceEnabled) await announceStream(stream);
+    if(!twitchToken) await getTwitchToken();
+    const d=await tGet(`https://api.twitch.tv/helix/streams?user_login=${cfg.twitch.username}`,{"Client-ID":cfg.twitch.clientId,"Authorization":`Bearer ${twitchToken}`});
+    if(d.data?.length) {
+      const s=d.data[0];
+      streamCurrentViewers=s.viewer_count;
+      if(s.viewer_count>streamPeakViewers) streamPeakViewers=s.viewer_count;
+      if(streamEndTimer){clearTimeout(streamEndTimer);streamEndTimer=null;streamEndTime=null;}
+      if(!isLive||lastStreamId!==s.id){
+        isLive=true;lastStreamId=s.id;streamStartTime=new Date();streamPeakViewers=s.viewer_count;
+        if(cfg.announce) await announceStream(s);
       }
-    } else { isStreamLive = false; }
-  } catch(e) { twitchAccessToken = null; console.error("⚠️ Twitch :",e.message); }
+    } else {
+      if(isLive&&!streamEndTimer){
+        // Sauvegarder les stats du stream
+        if(streamStartTime){
+          const duration=Math.round((Date.now()-streamStartTime.getTime())/60000);
+          db.streamStats.push({date:streamStartTime.toLocaleString("fr-FR"),duration,peakViewers:streamPeakViewers,game:"?"});
+          saveData();
+          await notifyOwner(`📊 **Stream terminé !**\nDurée : **${duration} min**\nPic spectateurs : **${streamPeakViewers}**`);
+        }
+        isLive=false;streamEndTime=new Date();streamPeakViewers=0;streamCurrentViewers=0;
+        console.log("⏱️ Stream terminé — arrêt IRC dans 1h");
+        streamEndTimer=setTimeout(()=>{
+          twitchIRCEnabled=false;
+          if(twitchBot.socket){twitchBot.socket.destroy();twitchBot.socket=null;}
+          twitchBot.connected=false;streamEndTimer=null;streamEndTime=null;
+          console.log("🛑 IRC Twitch arrêté automatiquement");
+        },60*60*1000);
+      } else if(!isLive){isLive=false;}
+    }
+  } catch(e){twitchToken=null;}
 }
-async function announceStream(stream) {
+
+async function announceStream(s) {
   try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const ch = guild.channels.cache.find(c=>c.name===LIVE_CHANNEL);
-    if (!ch) return;
-    const thumb = stream.thumbnail_url.replace("{width}","1280").replace("{height}","720");
-    const embed = new EmbedBuilder().setColor("#9146ff")
-      .setTitle(`🔴 ${config.twitchUsername} est en live !`)
-      .setDescription(`**${stream.title}**\n\n🎮 Jeu : **${stream.game_name||"Non renseigné"}**\n👥 Spectateurs : **${stream.viewer_count}**\n\n👉 [Rejoindre le stream](https://twitch.tv/${config.twitchUsername})`)
-      .setURL(`https://twitch.tv/${config.twitchUsername}`).setFooter({text:"Tom_O_Carre • Twitch"}).setTimestamp();
-    if (config.showThumbnail) embed.setImage(thumb);
-    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel("🎮 Regarder le live").setURL(`https://twitch.tv/${config.twitchUsername}`).setStyle(ButtonStyle.Link));
-    await ch.send({content:config.mentionEveryone?"@everyone 🔴 **Le stream vient de commencer !**":"🔴 **Le stream vient de commencer !**",embeds:[embed],components:[row]});
-    dashData.streams.push({title:stream.title,game:stream.game_name||"Inconnu",time:new Date().toLocaleString("fr-FR")});
-    dashData.streamsAnnounced++;
-  } catch(e) { console.error("⚠️ Annonce live :",e.message); }
+    const guild=await client.guilds.fetch(GUILD_ID);
+    const ch=guild.channels.cache.find(c=>c.name===CH.live);
+    if(!ch) return;
+    const embed=new EmbedBuilder().setColor("#9146ff")
+      .setTitle(`🔴 ${cfg.twitch.username} est en live !`)
+      .setDescription(`**${s.title}**\n\n🎮 ${s.game_name||"?"}\n👥 ${s.viewer_count} spectateurs\n\n[Rejoindre](https://twitch.tv/${cfg.twitch.username})`)
+      .setURL(`https://twitch.tv/${cfg.twitch.username}`).setTimestamp();
+    if(cfg.thumbnail) embed.setImage(s.thumbnail_url.replace("{width}","1280").replace("{height}","720"));
+    await ch.send({
+      content:cfg.everyone?"@everyone 🔴 **Live en cours !**":"🔴 **Live en cours !**",
+      embeds:[embed],
+      components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel("🎮 Regarder").setURL(`https://twitch.tv/${cfg.twitch.username}`).setStyle(ButtonStyle.Link))],
+    });
+    db.streams.push({title:s.title,game:s.game_name||"?",time:new Date().toLocaleString("fr-FR")});
+    streamsCount++;saveData();
+  } catch(e){console.error("⚠️ Annonce:",e.message);}
 }
 
 // ════════════════════════════════════════════════
-//  SERVEUR WEB DASHBOARD
+//  TWITCH CHAT BOT IRC
+// ════════════════════════════════════════════════
+function connectTwitchIRC() {
+  if(!twitchIRCEnabled||!cfg.twitch.botUsername||!cfg.twitch.botToken) return;
+  const socket=net.createConnection(6667,"irc.chat.twitch.tv");
+  twitchBot.socket=socket;
+  socket.on("connect",()=>{
+    const tok=cfg.twitch.botToken.startsWith("oauth:")?cfg.twitch.botToken:`oauth:${cfg.twitch.botToken}`;
+    socket.write(`PASS ${tok}\r\n`);
+    socket.write(`NICK ${cfg.twitch.botUsername}\r\n`);
+    socket.write(`JOIN #${cfg.twitch.username.toLowerCase()}\r\n`);
+    twitchBot.connected=true;
+    console.log(`💜 IRC Twitch : ${cfg.twitch.botUsername}`);
+    // Démarrer les rappels si configurés
+    if(cfg.twitchChatReminder.enabled) startReminders();
+  });
+  socket.on("data",data=>{
+    const msg=data.toString();
+    if(msg.includes("PING")){socket.write("PONG :tmi.twitch.tv\r\n");return;}
+    if(msg.includes("PRIVMSG")){
+      const m=msg.match(/:(.+)!.+PRIVMSG #\S+ :(.+)/);
+      if(m){
+        const[,user,text]=m;
+        const t=text.trim();
+        // Commandes chat
+        if(cfg.twitchChatCommands&&AUTO_RESPONSES[t.toLowerCase()]){
+          sendIRC(AUTO_RESPONSES[t.toLowerCase()]);return;
+        }
+        // Modération
+        if(cfg.twitchMod){
+          const banned=isBanned(t);
+          if(banned&&user.toLowerCase()!==cfg.twitch.username.toLowerCase()){
+            sendIRC(`/timeout ${user} 600 Mot interdit`);
+            sendIRC(`@${user} ⚠️ Message supprimé : contenu interdit.`);
+            db.twitchChatLogs.push({message:`🚫 [${user}] : "${banned}"`,time:new Date().toLocaleString("fr-FR"),status:"🚫"});
+            saveData();
+          }
+        }
+      }
+    }
+  });
+  socket.on("error",e=>{twitchBot.connected=false;console.error("⚠️ IRC:",e.message);});
+  socket.on("close",()=>{
+    twitchBot.connected=false;
+    if(twitchIRCEnabled){console.log("💔 IRC déconnecté — reconnexion dans 30s");setTimeout(connectTwitchIRC,30000);}
+  });
+}
+
+function sendIRC(message) {
+  if(!twitchBot.socket||!twitchBot.connected) return false;
+  twitchBot.socket.write(`PRIVMSG #${cfg.twitch.username.toLowerCase()} :${message}\r\n`);
+  db.twitchChatLogs.push({message,time:new Date().toLocaleString("fr-FR"),status:"✅"});
+  saveData();return true;
+}
+
+function startReminders() {
+  if(reminderInterval) clearInterval(reminderInterval);
+  if(!cfg.twitchChatReminder.enabled) return;
+  reminderInterval=setInterval(()=>{
+    if(twitchBot.connected&&isLive) sendIRC(cfg.twitchChatReminder.message);
+  },cfg.twitchChatReminder.interval*60*1000);
+}
+
+// ════════════════════════════════════════════════
+//  DASHBOARD AUTH
+// ════════════════════════════════════════════════
+function authMiddleware(req, res) {
+  const cookie=req.headers.cookie||"";
+  const token=cookie.split(";").find(c=>c.trim().startsWith("auth="))?.split("=")[1];
+  if(dashSessions.has(token)) return true;
+  // Exclure la page de login et l'API login
+  if(req.url==="/login"||req.url==="/api/login") return true;
+  // Rediriger vers login
+  res.writeHead(302,{"Location":"/login"});res.end();
+  return false;
+}
+
+const LOGIN_PAGE=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TomBot — Login</title>
+<style>*{margin:0;padding:0;box-sizing:border-box;}body{background:#0d0e10;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:'Segoe UI',sans-serif;}
+.box{background:#2b2d31;border:1px solid #3a3c43;border-radius:12px;padding:40px;width:320px;text-align:center;}
+h1{color:#5865f2;font-size:22px;margin-bottom:8px;}p{color:#949ba4;font-size:13px;margin-bottom:24px;}
+input{width:100%;background:#1e1f22;border:1px solid #3a3c43;border-radius:6px;padding:12px;color:#dbdee1;font-size:14px;outline:none;margin-bottom:16px;}
+input:focus{border-color:#5865f2;}button{width:100%;background:#5865f2;color:white;border:none;border-radius:6px;padding:12px;font-size:15px;font-weight:700;cursor:pointer;}
+button:hover{background:#4752c4;}.err{color:#ed4245;font-size:13px;margin-top:12px;}</style></head>
+<body><div class="box"><h1>🤖 TomBot</h1><p>Dashboard Tom_O_Carre</p>
+<input type="password" id="pwd" placeholder="Mot de passe..." onkeydown="if(event.key==='Enter')login()">
+<button onclick="login()">🔓 Connexion</button><div class="err" id="err"></div></div>
+<script>async function login(){const p=document.getElementById('pwd').value;
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+const d=await r.json();if(d.ok){location.href='/';}else{document.getElementById('err').textContent='❌ Mot de passe incorrect';}}</script></body></html>`;
+
+// ════════════════════════════════════════════════
+//  DASHBOARD SERVEUR WEB
 // ════════════════════════════════════════════════
 function startDashboard() {
-  const server = http.createServer((req,res) => {
-    const url = req.url;
+  const ALLOWED=["welcome-bot.js","dashboard.html",".env","package.json","data.json"];
+  const cors={"Content-Type":"application/json","Access-Control-Allow-Origin":"*"};
 
-    if (url==="/api/data") {
-      res.writeHead(200,{"Content-Type":"application/json"});
+  http.createServer((req,res)=>{
+    // Page login
+    if(req.url==="/login"){res.writeHead(200,{"Content-Type":"text/html;charset=utf-8"});return res.end(LOGIN_PAGE);}
+
+    // API login
+    if(req.url==="/api/login"&&req.method==="POST"){
+      let body="";req.on("data",d=>body+=d);
+      req.on("end",()=>{
+        const{password}=JSON.parse(body||"{}");
+        if(password===DASH_PWD){
+          const token=Math.random().toString(36).slice(2)+Date.now().toString(36);
+          dashSessions.add(token);
+          res.writeHead(200,{"Content-Type":"application/json","Set-Cookie":`auth=${token};Path=/;HttpOnly;Max-Age=86400`});
+          return res.end(JSON.stringify({ok:true}));
+        }
+        res.writeHead(401,cors);res.end(JSON.stringify({ok:false}));
+      });
+      return;
+    }
+
+    if(!authMiddleware(req,res)) return;
+
+    const url=req.url;
+
+    // ── /api/data ──
+    if(url==="/api/data"){
+      res.writeHead(200,cors);
       return res.end(JSON.stringify({
-        members:dashData.members, deleted:dashData.deleted,
-        qcmValidated:dashData.qcmMembers.length, streamsAnnounced:dashData.streamsAnnounced,
-        logs:dashData.logs.slice(-50), qcmMembers:dashData.qcmMembers.slice(-50),
-        streams:dashData.streams.slice(-20), bannedWords:dashData.bannedWords,
-        twitchChatLogs:dashData.twitchChatLogs.slice(-20),
-        prisonLogs:dashData.prisonLogs.slice(-20),
-        warns:dashData.warns, isLive:isStreamLive,
+        members:Object.keys(db.members).length, deleted, streamsAnnounced:streamsCount,
+        qcmValidated:db.qcmMembers.length, logs:db.logs.slice(-50),
+        qcmMembers:db.qcmMembers.slice(-50), streams:db.streams.slice(-20),
+        bannedWords:db.bannedWords, twitchChatLogs:db.twitchChatLogs.slice(-20),
+        prisonLogs:db.prisonLogs.slice(-20), warns:db.warns,
+        giveaways:db.giveaways.slice(-10), polls:db.polls.slice(-10),
+        streamStats:db.streamStats.slice(-10),
+        xpLeaderboard:Object.entries(db.xp).sort((a,b)=>b[1]-a[1]).slice(0,10)
+          .map(([id,xp])=>({id,xp,level:getLevel(xp).level,tag:db.members[id]?.tag||id})),
+        isLive, streamCurrentViewers, streamPeakViewers,
+        twitchBotConnected:twitchBot.connected, twitchIRCEnabled,
+        twitchBotUsername:cfg.twitch.botUsername,
+        streamEndTime:streamEndTime?streamEndTime.toISOString():null,
         config:{
-          twitchUsername:config.twitchUsername, announceEnabled:config.announceEnabled,
-          mentionEveryone:config.mentionEveryone, showThumbnail:config.showThumbnail,
-          twitchChatModEnabled:config.twitchChatModEnabled,
+          twitchUsername:cfg.twitch.username, announceEnabled:cfg.announce,
+          mentionEveryone:cfg.everyone, showThumbnail:cfg.thumbnail,
+          twitchChatModEnabled:cfg.twitchMod, twitchChatCommands:cfg.twitchChatCommands,
+          reminderEnabled:cfg.twitchChatReminder.enabled,
+          reminderInterval:cfg.twitchChatReminder.interval,
+          reminderMessage:cfg.twitchChatReminder.message,
         },
       }));
     }
 
-    if (url==="/api/settings" && req.method==="POST") {
+    // ── /api/settings ──
+    if(url==="/api/settings"&&req.method==="POST"){
       let body="";req.on("data",d=>body+=d);
       req.on("end",()=>{
-        try {
-          const data=JSON.parse(body);
-          const envUpdates={};
-          if (data.discordToken)       { TOKEN=data.discordToken; envUpdates.DISCORD_TOKEN=data.discordToken; }
-          if (data.twitchClientId)     { config.twitchClientId=data.twitchClientId; envUpdates.TWITCH_CLIENT_ID=data.twitchClientId; }
-          if (data.twitchClientSecret) { config.twitchClientSecret=data.twitchClientSecret; envUpdates.TWITCH_CLIENT_SECRET=data.twitchClientSecret; }
-          if (data.twitchUsername)     { config.twitchUsername=data.twitchUsername; envUpdates.TWITCH_USERNAME=data.twitchUsername; twitchAccessToken=null; }
-          if (data.twitchBotUsername)  { twitchBot.username=data.twitchBotUsername; envUpdates.TWITCH_BOT_USERNAME=data.twitchBotUsername; }
-          if (data.twitchBotToken)     { twitchBot.token=data.twitchBotToken; envUpdates.TWITCH_BOT_TOKEN=data.twitchBotToken; if(twitchBot.socket) twitchBot.socket.destroy(); setTimeout(connectTwitchChat,1000); }
-          if (typeof data.announceEnabled!=="undefined") config.announceEnabled=data.announceEnabled;
-          if (typeof data.mentionEveryone!=="undefined") config.mentionEveryone=data.mentionEveryone;
-          if (typeof data.showThumbnail!=="undefined") config.showThumbnail=data.showThumbnail;
-          if (typeof data.twitchChatModEnabled!=="undefined") config.twitchChatModEnabled=data.twitchChatModEnabled;
-          if (Object.keys(envUpdates).length) saveEnv(envUpdates);
-          res.writeHead(200,{"Content-Type":"application/json"});
-          res.end(JSON.stringify({ok:true}));
-        } catch(e){res.writeHead(400);res.end("{}");}
-      });
-      return;
+        try{
+          const d=JSON.parse(body),env={};
+          if(d.discordToken){TOKEN=d.discordToken;env.DISCORD_TOKEN=d.discordToken;}
+          if(d.twitchClientId){cfg.twitch.clientId=d.twitchClientId;env.TWITCH_CLIENT_ID=d.twitchClientId;}
+          if(d.twitchClientSecret){cfg.twitch.clientSecret=d.twitchClientSecret;env.TWITCH_CLIENT_SECRET=d.twitchClientSecret;}
+          if(d.twitchUsername){cfg.twitch.username=d.twitchUsername;env.TWITCH_USERNAME=d.twitchUsername;twitchToken=null;}
+          if(d.twitchBotUsername){cfg.twitch.botUsername=d.twitchBotUsername;env.TWITCH_BOT_USERNAME=d.twitchBotUsername;}
+          if(d.twitchBotToken){cfg.twitch.botToken=d.twitchBotToken;env.TWITCH_BOT_TOKEN=d.twitchBotToken;if(twitchBot.socket)twitchBot.socket.destroy();setTimeout(connectTwitchIRC,1000);}
+          if(d.dashboardPassword){env.DASHBOARD_PASSWORD=d.dashboardPassword;}
+          if(typeof d.announceEnabled!=="undefined") cfg.announce=d.announceEnabled;
+          if(typeof d.mentionEveryone!=="undefined") cfg.everyone=d.mentionEveryone;
+          if(typeof d.showThumbnail!=="undefined") cfg.thumbnail=d.showThumbnail;
+          if(typeof d.twitchChatModEnabled!=="undefined") cfg.twitchMod=d.twitchChatModEnabled;
+          if(typeof d.twitchChatCommands!=="undefined") cfg.twitchChatCommands=d.twitchChatCommands;
+          if(typeof d.reminderEnabled!=="undefined"){cfg.twitchChatReminder.enabled=d.reminderEnabled;startReminders();}
+          if(typeof d.reminderInterval!=="undefined"){cfg.twitchChatReminder.interval=d.reminderInterval;startReminders();}
+          if(typeof d.reminderMessage!=="undefined") cfg.twitchChatReminder.message=d.reminderMessage;
+          if(typeof d.twitchIRCEnabled!=="undefined"){
+            twitchIRCEnabled=d.twitchIRCEnabled;
+            if(twitchIRCEnabled&&!twitchBot.connected){if(streamEndTimer){clearTimeout(streamEndTimer);streamEndTimer=null;streamEndTime=null;}connectTwitchIRC();}
+            else if(!twitchIRCEnabled&&twitchBot.socket){twitchBot.socket.destroy();twitchBot.socket=null;twitchBot.connected=false;if(streamEndTimer){clearTimeout(streamEndTimer);streamEndTimer=null;streamEndTime=null;}}
+          }
+          if(Object.keys(env).length) saveEnv(env);
+          res.writeHead(200,cors);res.end(JSON.stringify({ok:true}));
+        }catch(e){res.writeHead(400);res.end("{}");}
+      });return;
     }
 
-    if (url==="/api/words/add" && req.method==="POST") {
+    // ── Mots bannis ──
+    if(url==="/api/words/add"&&req.method==="POST"){
       let body="";req.on("data",d=>body+=d);
       req.on("end",()=>{
-        try {
-          const {word}=JSON.parse(body);
-          const w=word.trim().toLowerCase();
-          if (w && !dashData.bannedWords.includes(w)) { dashData.bannedWords.push(w); res.writeHead(200,{"Content-Type":"application/json"}); res.end(JSON.stringify({ok:true})); }
-          else { res.writeHead(400); res.end(JSON.stringify({ok:false,error:"Mot déjà présent ou vide"})); }
-        } catch(e){res.writeHead(400);res.end("{}");}
-      });
-      return;
+        try{const{word}=JSON.parse(body);const w=word.trim().toLowerCase();
+          if(w&&!db.bannedWords.includes(w)){db.bannedWords.push(w);saveData();res.writeHead(200,cors);res.end(JSON.stringify({ok:true}));}
+          else{res.writeHead(400,cors);res.end(JSON.stringify({ok:false,error:"Déjà présent"}));}
+        }catch(e){res.writeHead(400);res.end("{}");}
+      });return;
+    }
+    if(url.startsWith("/api/words/remove/")&&req.method==="DELETE"){
+      db.bannedWords=db.bannedWords.filter(x=>x!==decodeURIComponent(url.replace("/api/words/remove/","")));
+      saveData();res.writeHead(200,cors);return res.end(JSON.stringify({ok:true}));
     }
 
-    if (url.startsWith("/api/words/remove/") && req.method==="DELETE") {
-      const word=decodeURIComponent(url.replace("/api/words/remove/",""));
-      const idx=dashData.bannedWords.indexOf(word);
-      if (idx>-1) dashData.bannedWords.splice(idx,1);
-      res.writeHead(200,{"Content-Type":"application/json"});
-      return res.end(JSON.stringify({ok:true}));
+    // ── Giveaway ──
+    if(url==="/api/giveaway/create"&&req.method==="POST"){
+      let body="";req.on("data",d=>body+=d);
+      req.on("end",async()=>{
+        try{
+          const{prize,duration,conditions,channel}=JSON.parse(body);
+          const guild=await client.guilds.fetch(GUILD_ID);
+          const gw=await startGiveaway(guild,channel||CH.welcome,prize,duration*60*1000,conditions||"");
+          res.writeHead(200,cors);res.end(JSON.stringify({ok:!!gw}));
+        }catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}
+      });return;
     }
 
-    if (url==="/api/code" && req.method==="GET") {
-      const botFile=path.join(__dirname,"welcome-bot.js");
-      res.writeHead(200,{"Content-Type":"application/json"});
-      return res.end(JSON.stringify({code:fs.readFileSync(botFile,"utf8")}));
+    // ── Sondage ──
+    if(url==="/api/poll/create"&&req.method==="POST"){
+      let body="";req.on("data",d=>body+=d);
+      req.on("end",async()=>{
+        try{
+          const{question,options,duration}=JSON.parse(body);
+          const guild=await client.guilds.fetch(GUILD_ID);
+          const poll=await createPoll(guild,question,options,duration*60*1000);
+          res.writeHead(200,cors);res.end(JSON.stringify({ok:!!poll}));
+        }catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}
+      });return;
     }
 
-    if (url==="/api/code" && req.method==="POST") {
+    // ── Planning stream ──
+    if(url==="/api/planning"&&req.method==="POST"){
+      let body="";req.on("data",d=>body+=d);
+      req.on("end",async()=>{
+        try{
+          const{planning}=JSON.parse(body);
+          const guild=await client.guilds.fetch(GUILD_ID);
+          const ch=guild.channels.cache.find(c=>c.name===CH.planning);
+          if(!ch){res.writeHead(404,cors);return res.end(JSON.stringify({ok:false,error:"Salon planning introuvable"}));}
+          const msgs=await ch.messages.fetch({limit:5});
+          for(const[,m]of msgs){if(m.author.id===client.user.id)await m.delete().catch(()=>{});}
+          await ch.send({embeds:[new EmbedBuilder().setColor("#9146ff")
+            .setTitle("📅 Planning des prochains streams")
+            .setDescription(planning)
+            .setFooter({text:"Tom_O_Carre • Planning"}).setTimestamp()]});
+          res.writeHead(200,cors);res.end(JSON.stringify({ok:true}));
+        }catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}
+      });return;
+    }
+
+    // ── Twitch message ──
+    if(url==="/api/twitch/sendmsg"&&req.method==="POST"){
       let body="";req.on("data",d=>body+=d);
       req.on("end",()=>{
-        try {
-          const {code}=JSON.parse(body);
-          const botFile=path.join(__dirname,"welcome-bot.js");
-          fs.writeFileSync(botFile+".backup",fs.readFileSync(botFile));
-          fs.writeFileSync(botFile,code);
-          res.writeHead(200,{"Content-Type":"application/json"});
-          res.end(JSON.stringify({ok:true,message:"Code sauvegardé ! Lance : pm2 restart tom-bot"}));
-        } catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}
-      });
-      return;
+        const{message}=JSON.parse(body||"{}");
+        const ok=sendIRC(message||"👋 Test depuis le dashboard !");
+        res.writeHead(200,cors);res.end(JSON.stringify({ok}));
+      });return;
     }
 
-    if (url==="/" || url==="/index.html") {
-      const file=path.join(__dirname,"dashboard.html");
-      if (fs.existsSync(file)) {
-        res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
-        return res.end(fs.readFileSync(file));
-      }
-    }
+    // ── Fichiers ──
+    if(url==="/api/files"){res.writeHead(200,cors);return res.end(JSON.stringify({files:ALLOWED.map(name=>{const p=path.join(__dirname,name),ex=fs.existsSync(p);return{name,exists:ex,size:ex?fs.statSync(p).size:0,modified:ex?fs.statSync(p).mtime.toLocaleString("fr-FR"):null};})}));}
+    if(url.startsWith("/api/files/read/")){const name=decodeURIComponent(url.replace("/api/files/read/",""));if(!ALLOWED.includes(name)){res.writeHead(403);return res.end("{}");}const p=path.join(__dirname,name);res.writeHead(200,cors);return res.end(JSON.stringify({ok:true,content:fs.existsSync(p)?fs.readFileSync(p,"utf8"):"",name}));}
+    if(url==="/api/files/save"&&req.method==="POST"){let body="";req.on("data",d=>body+=d);req.on("end",()=>{try{const{name,content}=JSON.parse(body);if(!ALLOWED.includes(name)){res.writeHead(403);return res.end("{}");}const p=path.join(__dirname,name);if(fs.existsSync(p))fs.writeFileSync(p+".backup",fs.readFileSync(p));fs.writeFileSync(p,content);res.writeHead(200,cors);res.end(JSON.stringify({ok:true,message:`${name} sauvegardé !`}));}catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}});return;}
+    if(url.startsWith("/api/files/download/")){const name=decodeURIComponent(url.replace("/api/files/download/",""));if(!ALLOWED.includes(name)){res.writeHead(403);return res.end("Interdit");}const p=path.join(__dirname,name);if(!fs.existsSync(p)){res.writeHead(404);return res.end("Introuvable");}res.writeHead(200,{"Content-Type":"application/octet-stream","Content-Disposition":`attachment; filename="${name}"`});return res.end(fs.readFileSync(p));}
+    if(url==="/api/files/upload"&&req.method==="POST"){let body="";req.on("data",d=>body+=d);req.on("end",()=>{try{const{name,content}=JSON.parse(body);if(!ALLOWED.includes(name)){res.writeHead(403);return res.end("{}");}const p=path.join(__dirname,name);if(fs.existsSync(p))fs.writeFileSync(p+".backup",fs.readFileSync(p));fs.writeFileSync(p,content);res.writeHead(200,cors);res.end(JSON.stringify({ok:true,message:`${name} uploadé !`}));}catch(e){res.writeHead(400);res.end(JSON.stringify({ok:false,error:e.message}));}});return;}
 
+    // ── Logs PM2 ──
+    if(url==="/api/logs/pm2"){const home=process.env.HOME||"/root";const out=path.join(home,".pm2/logs/tom-bot-out.log");const err=path.join(home,".pm2/logs/tom-bot-error.log");res.writeHead(200,cors);return res.end(JSON.stringify({logs:fs.existsSync(out)?fs.readFileSync(out,"utf8").split("\n").slice(-50).join("\n"):"",errors:fs.existsSync(err)?fs.readFileSync(err,"utf8").split("\n").slice(-20).join("\n"):""}));}
 
-    // ── GET /api/files — liste des fichiers ──
-    if (url === "/api/files" && req.method === "GET") {
-      const botDir = __dirname;
-      const allowed = ["welcome-bot.js", "dashboard.html", ".env", "package.json", "welcome-bot.js.backup"];
-      const files = allowed.map(name => {
-        const filePath = path.join(botDir, name);
-        const exists = fs.existsSync(filePath);
-        return {
-          name,
-          exists,
-          size: exists ? fs.statSync(filePath).size : 0,
-          modified: exists ? fs.statSync(filePath).mtime.toLocaleString("fr-FR") : null,
-        };
-      });
-      res.writeHead(200, {"Content-Type": "application/json"});
-      return res.end(JSON.stringify({files}));
-    }
-
-    // ── GET /api/files/:name — lire un fichier ──
-    if (url.startsWith("/api/files/read/") && req.method === "GET") {
-      const name = decodeURIComponent(url.replace("/api/files/read/", ""));
-      const allowed = ["welcome-bot.js", "dashboard.html", ".env", "package.json", "welcome-bot.js.backup"];
-      if (!allowed.includes(name)) { res.writeHead(403); return res.end(JSON.stringify({ok:false,error:"Fichier non autorisé"})); }
-      const filePath = path.join(__dirname, name);
-      if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end(JSON.stringify({ok:false,error:"Fichier introuvable"})); }
-      res.writeHead(200, {"Content-Type": "application/json"});
-      return res.end(JSON.stringify({ok:true, content: fs.readFileSync(filePath, "utf8"), name}));
-    }
-
-    // ── POST /api/files/save — sauvegarder un fichier ──
-    if (url === "/api/files/save" && req.method === "POST") {
-      let body = ""; req.on("data", d => body += d);
-      req.on("end", () => {
-        try {
-          const {name, content} = JSON.parse(body);
-          const allowed = ["welcome-bot.js", "dashboard.html", ".env", "package.json"];
-          if (!allowed.includes(name)) { res.writeHead(403); return res.end(JSON.stringify({ok:false,error:"Fichier non autorisé"})); }
-          const filePath = path.join(__dirname, name);
-          // Backup automatique
-          if (fs.existsSync(filePath)) fs.writeFileSync(filePath + ".backup", fs.readFileSync(filePath));
-          fs.writeFileSync(filePath, content);
-          res.writeHead(200, {"Content-Type": "application/json"});
-          res.end(JSON.stringify({ok:true, message:`${name} sauvegardé !`}));
-        } catch(e) { res.writeHead(400); res.end(JSON.stringify({ok:false,error:e.message})); }
-      });
-      return;
-    }
-
-    // ── GET /api/files/download/:name — télécharger un fichier ──
-    if (url.startsWith("/api/files/download/") && req.method === "GET") {
-      const name = decodeURIComponent(url.replace("/api/files/download/", ""));
-      const allowed = ["welcome-bot.js", "dashboard.html", ".env", "package.json", "welcome-bot.js.backup"];
-      if (!allowed.includes(name)) { res.writeHead(403); return res.end("Interdit"); }
-      const filePath = path.join(__dirname, name);
-      if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end("Introuvable"); }
-      res.writeHead(200, {"Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${name}"`});
-      return res.end(fs.readFileSync(filePath));
-    }
-
-    // ── POST /api/files/upload — uploader un fichier ──
-    if (url === "/api/files/upload" && req.method === "POST") {
-      let body = ""; req.on("data", d => body += d);
-      req.on("end", () => {
-        try {
-          const {name, content} = JSON.parse(body);
-          const allowed = ["welcome-bot.js", "dashboard.html", ".env", "package.json"];
-          if (!allowed.includes(name)) { res.writeHead(403); return res.end(JSON.stringify({ok:false,error:"Fichier non autorisé"})); }
-          const filePath = path.join(__dirname, name);
-          if (fs.existsSync(filePath)) fs.writeFileSync(filePath + ".backup", fs.readFileSync(filePath));
-          fs.writeFileSync(filePath, content);
-          res.writeHead(200, {"Content-Type": "application/json"});
-          res.end(JSON.stringify({ok:true, message:`${name} uploadé avec succès !`}));
-        } catch(e) { res.writeHead(400); res.end(JSON.stringify({ok:false,error:e.message})); }
-      });
-      return;
-    }
-
-    // ── GET /api/logs/pm2 — logs PM2 en direct ──
-    if (url === "/api/logs/pm2" && req.method === "GET") {
-      const logFile = path.join(process.env.HOME || "/root", ".pm2/logs/tom-bot-out.log");
-      const errFile = path.join(process.env.HOME || "/root", ".pm2/logs/tom-bot-error.log");
-      let logs = "";
-      if (fs.existsSync(logFile)) {
-        const lines = fs.readFileSync(logFile, "utf8").split("\n");
-        logs += lines.slice(-50).join("\n");
-      }
-      let errors = "";
-      if (fs.existsSync(errFile)) {
-        const lines = fs.readFileSync(errFile, "utf8").split("\n");
-        errors += lines.slice(-20).join("\n");
-      }
-      res.writeHead(200, {"Content-Type": "application/json"});
-      return res.end(JSON.stringify({ok:true, logs, errors}));
-    }
+    // ── Dashboard HTML ──
+    if(url==="/"||url==="/index.html"){const p=path.join(__dirname,"dashboard.html");if(fs.existsSync(p)){res.writeHead(200,{"Content-Type":"text/html;charset=utf-8"});return res.end(fs.readFileSync(p));}}
 
     res.writeHead(404);res.end("Not found");
-  });
-
-  server.listen(DASHBOARD_PORT,"0.0.0.0",()=>{
-    console.log(`🌐 Dashboard : http://192.168.1.162:${DASHBOARD_PORT}`);
-  });
+  }).listen(PORT,"0.0.0.0",()=>console.log(`🌐 Dashboard : http://192.168.1.162:${PORT}`));
 }
 
 // ════════════════════════════════════════════════
 //  CLIENT DISCORD
 // ════════════════════════════════════════════════
-const client = new Client({
-  intents:[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
-           GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
-           GatewayIntentBits.GuildMessageReactions],
+const client=new Client({
+  intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,
+           GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent],
+  rest:{timeout:15000},
 });
 
-client.once("clientReady", async () => {
-  console.log(`✅ Bot connecté : ${client.user.tag}`);
-  try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const members = await guild.members.fetch();
-    dashData.members = members.filter(m=>!m.user.bot).size;
-    await setupPrisonChannels(guild);
-  } catch(e) { console.error("⚠️ Init :",e.message); }
+const RULES_TEXT=`**Règle 1 — Respect**\nInsultes, harcèlement et propos discriminatoires interdits.\n\n**Règle 2 — Pas de spam**\nMessages répétitifs et flood interdits.\n\n**Règle 3 — Pas de publicité**\nAucune pub sans autorisation.\n\n**Règle 4 — Contenu adapté**\nContenu choquant, adulte ou illégal interdit.\n\n**Règle 5 — Français**\nLangue principale du serveur.\n\n**Règle 6 — Bonne ambiance**\nServeur gaming de Tom_O_Carre — sois sympa ! 🎮\n\n_Sanctions : warn → prison → ban_`;
 
-  // Règles
-  try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const rulesChannel = guild.channels.cache.find(c=>c.name===RULES_CHANNEL);
-    if (rulesChannel) {
-      const msgs = await rulesChannel.messages.fetch({limit:20});
-      const alreadyPosted = msgs.some(m=>m.author.id===client.user.id && m.components.length>0);
-      if (!alreadyPosted) {
-        const RULES = `
-**Règle 1 — Respect**
-Sois respectueux envers tous les membres. Les insultes, harcèlements ou propos discriminatoires sont strictement interdits.
+const sessions=new Map();
 
-**Règle 2 — Pas de spam**
-Il est interdit d'envoyer des messages répétitifs, des suites de caractères ou de flood les salons.
-
-**Règle 3 — Pas de publicité**
-Aucune publicité (liens, serveurs Discord, réseaux sociaux, etc.) sans autorisation préalable d'un modérateur.
-
-**Règle 4 — Contenu adapté**
-Tout contenu choquant, adulte ou illégal est interdit. Reste dans le thème du salon dans lequel tu écris.
-
-**Règle 5 — Langue**
-Le français est la langue principale du serveur. Merci de l'utiliser dans les salons publics.
-
-**Règle 6 — Bonne ambiance**
-Ce serveur est dédié au gaming et à la communauté de Tom_O_Carre. Viens avec une bonne humeur et profite ! 🎮
-
-_Le non-respect de ces règles entraîne un warn, une prison ou un ban selon la gravité._`;
-        const embed = new EmbedBuilder().setColor("#5865f2").setTitle("📜 Règles du serveur Tom_O_Carre").setDescription(RULES).setFooter({text:"Lis bien les règles avant de participer !"});
-        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("start_qcm").setLabel("✅ J'ai lu les règles — Passer le QCM").setStyle(ButtonStyle.Success));
-        await rulesChannel.send({embeds:[embed],components:[row]});
-        console.log("📜 Règles postées");
-      } else { console.log("📜 Règles déjà présentes"); }
+client.once("clientReady",async()=>{
+  console.log(`✅ Bot : ${client.user.tag}`);
+  try{
+    const guild=await client.guilds.fetch(GUILD_ID);
+    const members=await guild.members.fetch();
+    members.forEach(m=>{if(!m.user.bot&&!db.members[m.user.id])db.members[m.user.id]={tag:m.user.tag,joinedAt:m.joinedAt?.toISOString()};});
+    saveData();
+    await setupPrison(guild);
+    // Créer salon planning si inexistant
+    if(!guild.channels.cache.find(c=>c.name===CH.planning)){
+      await guild.channels.create({name:CH.planning,type:ChannelType.GuildText,topic:"Planning des prochains streams"});
+      console.log("📅 Salon planning créé");
     }
-  } catch(e) { console.error("⚠️ Règles :",e.message); }
-
-  await checkTwitchStream();
-  setInterval(checkTwitchStream, 2*60*1000);
-  console.log("📡 Surveillance Twitch activée");
-  startDashboard();
-  connectTwitchChat();
-});
-
-// ── Nouveau membre ─────────────────────────────
-client.on("guildMemberAdd", async (member) => {
-  dashData.members++;
-  try {
-    const guild = member.guild;
-    const welcomeChannel = guild.channels.cache.find(c=>c.name===WELCOME_CHANNEL);
-    if (!welcomeChannel) return;
-    const rulesChannel = guild.channels.cache.find(c=>c.name===RULES_CHANNEL);
-    const rulesLink = rulesChannel ? `<#${rulesChannel.id}>` : "le salon règles";
-    const embed = new EmbedBuilder().setColor("#9146ff")
-      .setTitle("🎮 Bienvenue sur le serveur de Tom_O_Carre !")
-      .setDescription(`Hey <@${member.id}>, bienvenue parmi nous ! 🎉\n\nTu rejoins la communauté gaming de **Tom_O_Carre** sur Twitch & YouTube.\n\n📜 Avant tout, rends-toi dans ${rulesLink} pour **lire les règles** et passer le **QCM de vérification**.\nUne fois validé, tu auras accès à tous les salons ! 🚀`)
-      .setThumbnail(member.user.displayAvatarURL())
-      .setFooter({text:`Membre #${guild.memberCount}`}).setTimestamp();
-    await welcomeChannel.send({embeds:[embed]});
-  } catch(e) { console.error("⚠️ Bienvenue :",e.message); }
-});
-
-// ── Censure — TOUT LE MONDE sauf bots ──────────
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-
-  const banned = containsBannedWord(message.content);
-  if (banned) {
-    try {
-      await message.delete();
-      const warn = await message.channel.send({embeds:[new EmbedBuilder().setColor("#ed4245").setDescription(`🚫 <@${message.author.id}> — Message supprimé : contenu interdit.`)]});
-      setTimeout(()=>warn.delete().catch(()=>{}), 5000);
-
-      const guild = message.guild;
-      const member = await guild.members.fetch(message.author.id);
-      await warnUser(member, `Mot interdit : "${banned}"`, guild);
-
-      dashData.logs.push({user:message.author.tag, word:banned, channel:message.channel.name, time:new Date().toLocaleString("fr-FR")});
-      dashData.deleted++;
-
-      const logsChannel = guild.channels.cache.find(c=>c.name===LOGS_CHANNEL);
-      if (logsChannel) {
-        const warnCount = dashData.warns[message.author.id]?.count || 0;
-        await logsChannel.send({embeds:[new EmbedBuilder().setColor("#ed4245")
-          .setTitle("🚫 Message supprimé — Mot interdit")
-          .addFields(
-            {name:"Membre",value:`<@${message.author.id}> (${message.author.tag})`,inline:true},
-            {name:"Salon",value:`<#${message.channel.id}>`,inline:true},
-            {name:"Mot",value:`\`${banned}\``,inline:true},
-            {name:"Avertissements",value:`${warnCount}/${MAX_WARNS}`,inline:true},
-            {name:"Message",value:`\`\`\`${message.content.slice(0,300)}\`\`\``}
-          ).setTimestamp()]});
+    // Créer rôles XP si inexistants
+    for(const l of XP_LEVELS){
+      if(!guild.roles.cache.find(r=>r.name===l.role)){
+        await guild.roles.create({name:l.role}).catch(()=>{});
       }
-    } catch(e) { console.error("⚠️ Censure :",e.message); }
-  }
+    }
+    // Poster règles
+    const rulesCh=guild.channels.cache.find(c=>c.name===CH.rules);
+    if(rulesCh){
+      const msgs=await rulesCh.messages.fetch({limit:10});
+      if(!msgs.some(m=>m.author.id===client.user.id&&m.components.length>0)){
+        await rulesCh.send({
+          embeds:[new EmbedBuilder().setColor("#5865f2").setTitle("📜 Règles — Tom_O_Carre").setDescription(RULES_TEXT).setFooter({text:"Lis avant de participer !"})],
+          components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("start_qcm").setLabel("✅ J'ai lu — Passer le QCM").setStyle(ButtonStyle.Success))],
+        });
+        console.log("📜 Règles postées");
+      }else{console.log("📜 Règles déjà présentes");}
+    }
+  }catch(e){console.error("⚠️ Init:",e.message);}
+
+  await checkStream();
+  setInterval(checkStream,3*60*1000);
+  startDashboard();
+  connectTwitchIRC();
+
+  // Nettoyage mémoire toutes les 30 min
+  setInterval(()=>{
+    if(global.gc) global.gc();
+    if(db.logs.length>500) db.logs=db.logs.slice(-200);
+    if(db.twitchChatLogs.length>200) db.twitchChatLogs=db.twitchChatLogs.slice(-100);
+    if(db.xpCooldowns) Object.keys(db.xpCooldowns).forEach(k=>{if(Date.now()-db.xpCooldowns[k]>XP_COOLDOWN*2)delete db.xpCooldowns[k];});
+    saveData();
+  },30*60*1000);
 });
 
-// ── Interactions (QCM + Tribunal) ──────────────
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-  const userId = interaction.user.id;
-  const guild  = interaction.guild;
+async function setupPrison(guild){
+  let role=guild.roles.cache.find(r=>r.name===ROLES.prison);
+  if(!role){role=await guild.roles.create({name:ROLES.prison,color:0x4a4a4a});for(const[,ch]of guild.channels.cache){if(ch.type===ChannelType.GuildText||ch.type===ChannelType.GuildVoice)await ch.permissionOverwrites.edit(role,{ViewChannel:false,Connect:false}).catch(()=>{});}}
+  const modoRole=guild.roles.cache.find(r=>r.name===ROLES.modo);const everyone=guild.roles.everyone;
+  let cat=guild.channels.cache.find(c=>c.name==="🔒 PRISON"&&c.type===ChannelType.GuildCategory);
+  if(!cat){cat=await guild.channels.create({name:"🔒 PRISON",type:ChannelType.GuildCategory,permissionOverwrites:[{id:everyone.id,deny:[PermissionsBitField.Flags.ViewChannel]},{id:role.id,allow:[PermissionsBitField.Flags.ViewChannel]},...(modoRole?[{id:modoRole.id,allow:[PermissionsBitField.Flags.ViewChannel]}]:[])]});}
+  if(!guild.channels.cache.find(c=>c.name===CH.prison)){await guild.channels.create({name:CH.prison,type:ChannelType.GuildText,parent:cat.id,permissionOverwrites:[{id:everyone.id,deny:[PermissionsBitField.Flags.ViewChannel]},{id:role.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages]},...(modoRole?[{id:modoRole.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages,PermissionsBitField.Flags.ManageMessages]}]:[])]});}
+  if(!guild.channels.cache.find(c=>c.name===CH.prisonVoc)){await guild.channels.create({name:CH.prisonVoc,type:ChannelType.GuildVoice,parent:cat.id,permissionOverwrites:[{id:everyone.id,deny:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.Connect]},{id:role.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.Connect,PermissionsBitField.Flags.Speak]},...(modoRole?[{id:modoRole.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.Connect,PermissionsBitField.Flags.Speak,PermissionsBitField.Flags.MuteMembers]}]:[])]});}
+  if(!guild.channels.cache.find(c=>c.name===CH.tribunal)){const modoCat=guild.channels.cache.find(c=>c.name==="🛡️ MODÉRATION"&&c.type===ChannelType.GuildCategory);await guild.channels.create({name:CH.tribunal,type:ChannelType.GuildText,parent:modoCat?.id||cat.id,permissionOverwrites:[{id:everyone.id,deny:[PermissionsBitField.Flags.ViewChannel]},...(modoRole?[{id:modoRole.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages]}]:[])]});}
+  console.log("🔒 Prison vérifiée");
+}
+
+// Nouveau membre
+client.on("guildMemberAdd",async member=>{
+  if(member.user.bot) return;
+  db.members[member.user.id]={tag:member.user.tag,joinedAt:new Date().toISOString()};
+  saveData();
+  const ch=member.guild.channels.cache.find(c=>c.name===CH.welcome);if(!ch)return;
+  const rules=member.guild.channels.cache.find(c=>c.name===CH.rules);
+  ch.send({embeds:[new EmbedBuilder().setColor("#9146ff").setTitle("🎮 Bienvenue sur Tom_O_Carre !").setDescription(`Hey <@${member.id}> ! 🎉\n\nVa dans ${rules?`<#${rules.id}>`:"#règles"} pour lire les règles et passer le QCM. 🚀`).setThumbnail(member.user.displayAvatarURL()).setFooter({text:`Membre #${member.guild.memberCount}`}).setTimestamp()]});
+  await notifyOwner(`👋 **Nouveau membre** : ${member.user.tag}`);
+});
+
+// Messages
+client.on("messageCreate",async msg=>{
+  if(msg.author.bot) return;
+  const banned=isBanned(msg.content);
+  if(banned){
+    try{
+      await msg.delete();
+      const w=await msg.channel.send({embeds:[new EmbedBuilder().setColor("#ed4245").setDescription(`🚫 <@${msg.author.id}> — Message supprimé.`)]});
+      setTimeout(()=>w.delete().catch(()=>{}),5000);
+      const member=await msg.guild.members.fetch(msg.author.id);
+      await warn(member,`Mot interdit : "${banned}"`,msg.guild);
+      db.logs.push({user:msg.author.tag,word:banned,channel:msg.channel.name,time:new Date().toLocaleString("fr-FR")});
+      deleted++;saveData();
+    }catch(e){console.error("⚠️ Censure:",e.message);}
+    return;
+  }
+
+  // Auto-réponses Discord
+  const cmd=msg.content.toLowerCase().trim();
+  if(AUTO_RESPONSES[cmd]){msg.reply(AUTO_RESPONSES[cmd]).catch(()=>{});return;}
+
+  // Commandes fun
+  if(cmd==="!dice"){msg.reply(`🎲 Tu as obtenu : **${rand(1,6)}**`).catch(()=>{});return;}
+  if(cmd==="!8ball"){
+    const answers=["Oui !","Non...","Peut-être","Absolument !","Je ne pense pas","Sans aucun doute !","C'est flou...","Certainement pas !"];
+    msg.reply(`🎱 ${answers[rand(0,answers.length-1)]}`).catch(()=>{});return;
+  }
+  if(cmd.startsWith("!rank")){
+    const uid=msg.author.id;const xp=db.xp[uid]||0;const level=getLevel(xp);const next=getNextLevel(xp);
+    msg.reply({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle(`⭐ Rang de ${msg.author.tag}`).addFields({name:"Niveau",value:`${level.level}`,inline:true},{name:"XP",value:`${xp}`,inline:true},{name:"Prochain niveau",value:next?`${xp}/${next.xp} XP`:"MAX",inline:true})]}).catch(()=>{});return;
+  }
+  if(cmd==="!top"){
+    const top=Object.entries(db.xp).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    const desc=top.map(([id,xp],i)=>`${["🥇","🥈","🥉","4️⃣","5️⃣"][i]} <@${id}> — **${xp} XP** (Niv. ${getLevel(xp).level})`).join("\n");
+    msg.reply({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle("🏆 Top 5 XP").setDescription(desc||"Aucun membre")]}).catch(()=>{});return;
+  }
+
+  // XP
+  const member=await msg.guild.members.fetch(msg.author.id).catch(()=>null);
+  if(member) await addXP(member,msg.guild);
+});
+
+// Interactions
+client.on("interactionCreate",async interaction=>{
+  if(!interaction.isButton()) return;
+  const uid=interaction.user.id;const guild=interaction.guild;
 
   // QCM
-  if (interaction.customId==="start_qcm") {
-    await interaction.deferReply({ ephemeral: true }).catch(() => {});
-    const QCM = [
-      { question:"❓ Question 1 — Quelle est la règle principale du serveur ?",
-        answers:[{label:"Respecter tout le monde",correct:true},{label:"Faire du spam librement",correct:false},{label:"Faire de la pub sans limite",correct:false}]},
-      { question:"❓ Question 2 — Le spam est-il autorisé sur ce serveur ?",
-        answers:[{label:"Non, c'est interdit",correct:true},{label:"Oui, dans tous les salons",correct:false},{label:"Seulement la nuit",correct:false}]},
-      { question:"❓ Question 3 — Que risques-tu si tu ne respectes pas les règles ?",
-        answers:[{label:"Un warn, prison ou ban",correct:true},{label:"Rien du tout",correct:false},{label:"Un message privé sympa",correct:false}]},
-    ];
-    const step = 0;
-    const q = QCM[step];
-    const shuffled = [...q.answers].sort(()=>Math.random()-0.5);
-    sessions.set(userId,{step,score:0,shuffled,qcm:QCM});
-    const embed = new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Question 1 / ${QCM.length}`).setDescription(q.question).setFooter({text:"Tom_O_Carre • Vérification des règles"});
-    const row = new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${userId}_${i}`).setLabel(a.label).setStyle(ButtonStyle.Primary)));
-    await interaction.followUp({embeds:[embed],components:[row],ephemeral:true}).catch(async()=>{
-      await interaction.reply({embeds:[embed],components:[row],ephemeral:true}).catch(()=>{});
-    });
+  if(interaction.customId==="start_qcm"){
+    sessions.set(uid,{step:0});
+    const q=QCM_QUESTIONS[0];const shuffled=[...q.a].sort(()=>Math.random()-0.5);
+    sessions.get(uid).shuffled=shuffled;
+    await interaction.reply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q1/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))],flags:64}).catch(()=>{});
     return;
   }
 
-  if (interaction.customId.startsWith(`qcm_${userId}_`)) {
-    const session = sessions.get(userId);
-    if (!session) {
-      await interaction.reply({content:"❌ Session expirée. Clique à nouveau sur le bouton ✅ dans le salon règles.",ephemeral:true}).catch(()=>{});
-      return;
-    }
-    // Defer pour éviter le timeout Discord
+  if(interaction.customId.startsWith(`qcm_${uid}_`)){
     await interaction.deferUpdate().catch(()=>{});
-    const answerIndex = parseInt(interaction.customId.split("_").pop());
-    const chosen = session.shuffled[answerIndex];
-    if (chosen.correct) {
-      session.score++; session.step++;
-      if (session.step < session.qcm.length) {
-        const q = session.qcm[session.step];
-        const shuffled = [...q.answers].sort(()=>Math.random()-0.5);
-        session.shuffled = shuffled;
-        const embed = new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Question ${session.step+1} / ${session.qcm.length}`).setDescription(q.question).setFooter({text:"Tom_O_Carre • Vérification des règles"});
-        const row = new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${userId}_${i}`).setLabel(a.label).setStyle(ButtonStyle.Primary)));
-        await interaction.editReply({embeds:[embed],components:[row]}).catch(()=>{});
-      } else {
-        sessions.delete(userId);
-        try {
-          const member = await guild.members.fetch(userId);
-          const role = guild.roles.cache.find(r=>r.name===ROLE_AFTER_QCM);
-          if (role) await member.roles.add(role);
-          const logsChannel = guild.channels.cache.find(c=>c.name===LOGS_CHANNEL);
-          if (logsChannel) await logsChannel.send(`✅ **${member.user.tag}** a réussi le QCM et reçu le rôle **${ROLE_AFTER_QCM}**.`);
-          dashData.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});
-          dashData.qcmValidated++;
-        } catch(e) {}
-        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#57f287").setTitle("✅ QCM réussi !").setDescription("Bravo ! Bienvenue dans la communauté **Tom_O_Carre** ! 🎮")],components:[]}).catch(()=>{});
+    const session=sessions.get(uid);
+    if(!session){await interaction.editReply({content:"❌ Session expirée. Reclique sur le bouton.",components:[]}).catch(()=>{});return;}
+    const idx=parseInt(interaction.customId.split("_").pop());
+    const chosen=session.shuffled[idx];
+    if(chosen.ok){
+      session.step++;
+      if(session.step<QCM_QUESTIONS.length){
+        const q=QCM_QUESTIONS[session.step];const shuffled=[...q.a].sort(()=>Math.random()-0.5);session.shuffled=shuffled;
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q${session.step+1}/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))]}).catch(()=>{});
+      }else{
+        sessions.delete(uid);
+        try{const member=await guild.members.fetch(uid);const role=guild.roles.cache.find(r=>r.name===ROLES.member);if(role)await member.roles.add(role);db.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});db.members[uid]={...db.members[uid],qcmPassed:true};saveData();const log=guild.channels.cache.find(c=>c.name===CH.logs);if(log)log.send(`✅ **${member.user.tag}** a validé le QCM → **${ROLES.member}**`);}catch(e){}
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#57f287").setTitle("✅ QCM réussi !").setDescription("Bienvenue dans la communauté Tom_O_Carre ! 🎮")],components:[]}).catch(()=>{});
       }
-    } else {
-      sessions.delete(userId);
-      await interaction.editReply({embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("❌ Mauvaise réponse !").setDescription("Relis bien les règles et réessaie.")],components:[]}).catch(()=>{});
+    }else{
+      sessions.delete(uid);
+      await interaction.editReply({embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("❌ Mauvaise réponse !").setDescription("Relis les règles et réessaie.")],components:[]}).catch(()=>{});
     }
     return;
   }
 
-  // TRIBUNAL
-  if (interaction.customId.startsWith("verdict_")) {
-    const parts = interaction.customId.split("_");
-    const verdict = parts[1];
-    const targetId = parts[2];
-    try {
-      const target = await guild.members.fetch(targetId);
-      const prisonLog = dashData.prisonLogs.find(p=>p.userId===targetId && p.verdict==="En attente");
-      const judgeTag = interaction.user.tag;
-      const prisonRole = guild.roles.cache.find(r=>r.name===ROLE_PRISON);
-      const memberRole = guild.roles.cache.find(r=>r.name===ROLE_AFTER_QCM);
+  // Giveaway participation
+  if(interaction.customId==="giveaway_join"){
+    await interaction.deferReply({flags:64}).catch(()=>{});
+    const gw=db.giveaways.find(g=>g.id===interaction.message.id&&!g.ended);
+    if(!gw){await interaction.editReply({content:"❌ Ce giveaway est terminé."}).catch(()=>{});return;}
+    if(gw.participants.includes(uid)){await interaction.editReply({content:"✅ Tu participes déjà !"}).catch(()=>{});return;}
+    gw.participants.push(uid);saveData();
+    await interaction.editReply({content:`🎁 Tu participes au giveaway **${gw.prize}** ! Bonne chance ! (${gw.participants.length} participants)`}).catch(()=>{});
+    return;
+  }
 
-      if (verdict==="free") {
-        if (prisonRole) await target.roles.remove(prisonRole).catch(()=>{});
-        if (memberRole) await target.roles.add(memberRole).catch(()=>{});
-        await target.user.send(`🔓 **Tu es libre !** Le tribunal a décidé de te libérer. Bienvenue de retour !`).catch(()=>{});
-        if (prisonLog) prisonLog.verdict = `🔓 Liberté (par ${judgeTag})`;
-        await interaction.update({embeds:[new EmbedBuilder().setColor("#57f287").setTitle("⚖️ Verdict : Liberté").setDescription(`<@${targetId}> a été libéré par <@${interaction.user.id}>.`)],components:[]});
+  // Vote sondage
+  if(interaction.customId.startsWith("poll_vote_")){
+    await interaction.deferReply({flags:64}).catch(()=>{});
+    const optIdx=parseInt(interaction.customId.replace("poll_vote_",""));
+    const poll=db.polls.find(p=>p.id===interaction.message.id&&!p.ended);
+    if(!poll){await interaction.editReply({content:"❌ Sondage terminé."}).catch(()=>{});return;}
+    if(poll.voters[uid]!==undefined){
+      poll.votes[poll.voters[uid]]--;
+    }
+    poll.voters[uid]=optIdx;poll.votes[optIdx]++;saveData();
+    await interaction.editReply({content:`✅ Vote enregistré : **${["🇦","🇧","🇨","🇩"][optIdx]} ${poll.options[optIdx]}**`}).catch(()=>{});
+    return;
+  }
 
-      } else if (verdict==="mute") {
-        await target.timeout(24*60*60*1000,"Décision du tribunal").catch(()=>{});
-        if (prisonRole) await target.roles.remove(prisonRole).catch(()=>{});
-        if (memberRole) await target.roles.add(memberRole).catch(()=>{});
-        await target.user.send(`🔇 **Verdict : Mute 24h.** Tu pourras parler à nouveau dans 24 heures.`).catch(()=>{});
-        if (prisonLog) prisonLog.verdict = `🔇 Mute 24h (par ${judgeTag})`;
-        await interaction.update({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle("⚖️ Verdict : Mute 24h").setDescription(`<@${targetId}> a été mute 24h par <@${interaction.user.id}>.`)],components:[]});
-
-      } else if (verdict==="ban") {
-        await target.user.send(`🔨 **Verdict : Ban permanent.** Tu as été banni du serveur Tom_O_Carre.`).catch(()=>{});
-        await guild.members.ban(targetId,{reason:`Décision du tribunal par ${judgeTag}`});
-        if (prisonLog) prisonLog.verdict = `🔨 Ban (par ${judgeTag})`;
-        await interaction.update({embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("⚖️ Verdict : Ban").setDescription(`<@${targetId}> a été banni par <@${interaction.user.id}>.`)],components:[]});
+  // Tribunal
+  if(interaction.customId.startsWith("v_")){
+    const[,verdict,targetId]=interaction.customId.split("_");
+    await interaction.deferUpdate().catch(()=>{});
+    try{
+      const target=await guild.members.fetch(targetId);
+      const prisonRole=guild.roles.cache.find(r=>r.name===ROLES.prison);
+      const memberRole=guild.roles.cache.find(r=>r.name===ROLES.member);
+      const log=guild.channels.cache.find(c=>c.name===CH.logs);
+      const entry=db.prisonLogs.find(p=>p.userId===targetId&&p.verdict==="En attente");
+      if(verdict==="free"){
+        if(prisonRole) await target.roles.remove(prisonRole).catch(()=>{});
+        const backup=db.members[targetId]?.rolesBackup||[];
+        for(const rid of backup){const r=guild.roles.cache.get(rid);if(r)await target.roles.add(r).catch(()=>{});}
+        target.user.send("🔓 Tu es libre ! Bienvenue de retour.").catch(()=>{});
+        if(entry) entry.verdict=`🔓 Liberté (${interaction.user.tag})`;
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#57f287").setTitle("⚖️ Liberté").setDescription(`<@${targetId}> est libre.`)],components:[]});
+      }else if(verdict==="mute"){
+        await target.timeout(24*60*60*1000,"Tribunal").catch(()=>{});
+        if(prisonRole) await target.roles.remove(prisonRole).catch(()=>{});
+        if(memberRole) await target.roles.add(memberRole).catch(()=>{});
+        target.user.send("🔇 Verdict : Mute 24h.").catch(()=>{});
+        if(entry) entry.verdict=`🔇 Mute 24h (${interaction.user.tag})`;
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle("⚖️ Mute 24h").setDescription(`<@${targetId}> est mute 24h.`)],components:[]});
+      }else if(verdict==="ban"){
+        target.user.send("🔨 Verdict : Ban permanent.").catch(()=>{});
+        await guild.members.ban(targetId,{reason:`Tribunal — ${interaction.user.tag}`});
+        if(entry) entry.verdict=`🔨 Ban (${interaction.user.tag})`;
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#ed4245").setTitle("⚖️ Ban").setDescription(`<@${targetId}> a été banni.`)],components:[]});
       }
-
-      const logsChannel = guild.channels.cache.find(c=>c.name===LOGS_CHANNEL);
-      if (logsChannel) await logsChannel.send(`⚖️ **Verdict tribunal** — <@${targetId}> : **${verdict}** par <@${interaction.user.id}>`);
-
-    } catch(e) { console.error("⚠️ Tribunal :",e.message); await interaction.reply({content:"❌ Erreur lors du verdict.",ephemeral:true}); }
+      saveData();
+      if(log) log.send(`⚖️ Verdict : <@${targetId}> → **${verdict}** par <@${interaction.user.id}>`);
+      await notifyOwner(`⚖️ **Tribunal** — ${target.user.tag} → **${verdict}** par ${interaction.user.tag}`);
+    }catch(e){console.error("⚠️ Tribunal:",e.message);}
   }
 });
 
