@@ -163,6 +163,19 @@ body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-he
     <!-- LOGS -->
     <div class="panel" id="panel-logs"><div class="card"><div class="ct">📋 Logs</div><div class="ll" id="logs-list"></div></div></div>
 
+    <!-- VALIDATION MANUELLE QCM -->
+    <div class="panel" id="panel-qcm-validate" style="display:none">
+      <div class="card">
+        <div class="card-title"><span>✅</span> Valider manuellement un membre</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">Pour débloquer un membre qui a eu un problème au QCM.</p>
+        <div class="row" style="flex-wrap:wrap;gap:10px;">
+          <input class="input" id="qcm-user-id" placeholder="ID Discord du membre" style="flex:1;min-width:200px">
+          <button class="btn btn-success" onclick="validateQCMManual()">✅ Valider</button>
+        </div>
+        <div id="qcm-result" style="margin-top:10px;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--text-muted)"></div>
+      </div>
+    </div>
+
     <!-- PRISON -->
     <div class="panel" id="panel-prison"><div class="card"><div class="ct">🔒 Prisonniers</div><div class="ll" id="prison-list"></div></div></div>
 

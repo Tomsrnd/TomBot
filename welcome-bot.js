@@ -587,6 +587,28 @@ function startDashboard() {
     }
 
     // ── Mots bannis ──
+    // ── POST /api/qcm/validate — validation manuelle QCM ──
+    if(url==="/api/qcm/validate"&&req.method==="POST"){
+      let body="";req.on("data",d=>body+=d);
+      req.on("end",async()=>{
+        try{
+          const{userId}=JSON.parse(body);
+          if(!userId){res.writeHead(400,cors);return res.end(JSON.stringify({ok:false,error:"ID manquant"}));}
+          const guild=await client.guilds.fetch(GUILD_ID);
+          const member=await guild.members.fetch(userId);
+          const role=guild.roles.cache.find(r=>r.name===ROLES.member);
+          if(role)await member.roles.add(role);
+          db.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});
+          db.members[userId]={...db.members[userId],qcmPassed:true};
+          saveData();
+          const log=guild.channels.cache.find(c=>c.name===CH.logs);
+          if(log)log.send(`✅ **${member.user.tag}** validé manuellement`);
+          await notifyOwner(`✅ **QCM validé manuellement** — ${member.user.tag}`);
+          res.writeHead(200,cors);res.end(JSON.stringify({ok:true}));
+        }catch(e){res.writeHead(400,cors);res.end(JSON.stringify({ok:false,error:e.message}));}
+      });return;
+    }
+
     if(url==="/api/words/add"&&req.method==="POST"){
       let body="";req.on("data",d=>body+=d);
       req.on("end",()=>{
@@ -810,7 +832,7 @@ client.on("interactionCreate",async interaction=>{
     sessions.set(uid,{step:0});
     const q=QCM_QUESTIONS[0];const shuffled=[...q.a].sort(()=>Math.random()-0.5);
     sessions.get(uid).shuffled=shuffled;
-    await interaction.reply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q1/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))],flags:64}).catch(()=>{});
+    await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q1/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))]}).catch(()=>{});
     return;
   }
 
@@ -862,6 +884,23 @@ client.on("interactionCreate",async interaction=>{
     return;
   }
 
+
+  // ── Validation manuelle QCM (modérateurs) ──
+  if(interaction.customId.startsWith("qcm_validate_")){
+    const targetId=interaction.customId.replace("qcm_validate_","");
+    try{
+      const member=await guild.members.fetch(targetId);
+      const role=guild.roles.cache.find(r=>r.name===ROLES.member);
+      if(role)await member.roles.add(role);
+      db.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});
+      db.members[targetId]={...db.members[targetId],qcmPassed:true};
+      saveData();
+      const log=guild.channels.cache.find(c=>c.name===CH.logs);
+      if(log)log.send(`✅ **${member.user.tag}** validé manuellement par <@${interaction.user.id}>`);
+      await interaction.reply({content:`✅ ${member.user.tag} a été validé manuellement !`,flags:64});
+      await notifyOwner(`✅ **Validation manuelle QCM** — ${member.user.tag} par ${interaction.user.tag}`);
+    }catch(e){await interaction.reply({content:"❌ Erreur",flags:64});}
+  }
   // Tribunal
   if(interaction.customId.startsWith("v_")){
     const[,verdict,targetId]=interaction.customId.split("_");
