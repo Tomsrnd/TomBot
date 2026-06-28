@@ -817,6 +817,31 @@ client.on("messageCreate",async msg=>{
     msg.reply({embeds:[new EmbedBuilder().setColor("#faa81a").setTitle("🏆 Top 5 XP").setDescription(desc||"Aucun membre")]}).catch(()=>{});return;
   }
 
+
+  // ── Commande !validateqcm pour valider manuellement ──
+  if(msg.content.startsWith("!validateqcm")){
+    const modoRole=msg.guild.roles.cache.find(r=>r.name===ROLES.modo);
+    if(!modoRole||!msg.member.roles.has(modoRole.id)){
+      msg.reply("❌ Permission refusée — réservé aux modérateurs").catch(()=>{});return;
+    }
+    const args=msg.content.split(" ");
+    const userId=args[1]?.replace(/[<@!>]/g,"");
+    if(!userId){msg.reply("Usage: `!validateqcm <@utilisateur>`").catch(()=>{});return;}
+    try{
+      const member=await msg.guild.members.fetch(userId);
+      const role=msg.guild.roles.cache.find(r=>r.name===ROLES.member);
+      if(role)await member.roles.add(role);
+      db.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});
+      db.members[userId]={...db.members[userId],qcmPassed:true};
+      saveData();
+      const log=msg.guild.channels.cache.find(c=>c.name===CH.logs);
+      if(log)log.send(`✅ **${member.user.tag}** validé manuellement par <@${msg.author.id}>`);
+      msg.reply(`✅ ${member.user.tag} a été validé !`).catch(()=>{});
+      await notifyOwner(`✅ **QCM validé manuellement** — ${member.user.tag} par ${msg.author.tag}`);
+    }catch(e){msg.reply("❌ Membre introuvable").catch(()=>{});}
+    return;
+  }
+
   // XP
   const member=await msg.guild.members.fetch(msg.author.id).catch(()=>null);
   if(member) await addXP(member,msg.guild);
@@ -832,7 +857,7 @@ client.on("interactionCreate",async interaction=>{
     sessions.set(uid,{step:0});
     const q=QCM_QUESTIONS[0];const shuffled=[...q.a].sort(()=>Math.random()-0.5);
     sessions.get(uid).shuffled=shuffled;
-    await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q1/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))]}).catch(()=>{});
+    await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q1/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))],flags:64}).catch(()=>{});
     return;
   }
 
@@ -846,7 +871,7 @@ client.on("interactionCreate",async interaction=>{
       session.step++;
       if(session.step<QCM_QUESTIONS.length){
         const q=QCM_QUESTIONS[session.step];const shuffled=[...q.a].sort(()=>Math.random()-0.5);session.shuffled=shuffled;
-        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q${session.step+1}/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))]}).catch(()=>{});
+        await interaction.editReply({embeds:[new EmbedBuilder().setColor("#5865f2").setTitle(`📋 QCM — Q${session.step+1}/${QCM_QUESTIONS.length}`).setDescription(q.q).setFooter({text:"Tom_O_Carre • Vérification"})],components:[new ActionRowBuilder().addComponents(shuffled.map((a,i)=>new ButtonBuilder().setCustomId(`qcm_${uid}_${i}`).setLabel(a.l).setStyle(ButtonStyle.Primary)))],flags:64}).catch(()=>{});
       }else{
         sessions.delete(uid);
         try{const member=await guild.members.fetch(uid);const role=guild.roles.cache.find(r=>r.name===ROLES.member);if(role)await member.roles.add(role);db.qcmMembers.push({name:member.user.tag,date:new Date().toLocaleString("fr-FR")});db.members[uid]={...db.members[uid],qcmPassed:true};saveData();const log=guild.channels.cache.find(c=>c.name===CH.logs);if(log)log.send(`✅ **${member.user.tag}** a validé le QCM → **${ROLES.member}**`);}catch(e){}
